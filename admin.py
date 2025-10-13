@@ -36,6 +36,17 @@ def is_allowed(ctx, command_type):
 
 def register_commands(bot):
 
+    @bot.event
+    async def on_command_error(ctx, error):
+        if isinstance(error, discord.ext.commands.MissingRequiredArgument):
+            await ctx.send(f"❌ Missing argument: {error.param.name}")
+        elif isinstance(error, discord.ext.commands.BadArgument):
+            await ctx.send(f"❌ Invalid argument type or member not found.")
+        elif isinstance(error, discord.ext.commands.CommandNotFound):
+            await ctx.send(f"❌ Unknown command. Use ~~help to see available commands.")
+        else:
+            await ctx.send(f"❌ An error occurred: {str(error)}")
+
     @bot.command()
     async def clear(ctx, amount: int):
         if not is_allowed(ctx, "full"):
