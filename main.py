@@ -40,7 +40,7 @@ if not os.path.exists(ECON_FILE):
 with open(CONFIG_FILE, 'r') as f:
     config = json.load(f)
 
-# Helper functions
+# ---------------- Helpers ----------------
 
 def save_config():
     with open(CONFIG_FILE, 'w') as f:
@@ -66,7 +66,7 @@ def is_allowed(ctx, command_type):
         return has_role(ctx.author, HOLDER_ROLE) or has_role(ctx.author, FULL_ACCESS_ROLE)
     return False
 
-# Economy helpers
+# ---------------- Economy Helpers ----------------
 
 def ensure_user(user_id):
     data = load_economy()
@@ -81,7 +81,7 @@ def change_balance(user_id, wallet_change=0, bank_change=0):
     data["users"][str(user_id)]["bank"] += bank_change
     save_economy(data)
 
-# --- Bot events and tasks remain as in your original file ---
+# ---------------- Bot Events ----------------
 
 @bot.event
 async def on_ready():
@@ -89,7 +89,20 @@ async def on_ready():
     auto_cleaner.start()
     backup_economy.start()
 
-# -------------- Economy Commands --------------
+# ---------------- Error Handling ----------------
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"❌ Missing argument: {error.param.name}")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Invalid argument type.")
+    elif isinstance(error, commands.CommandNotFound):
+        await ctx.send("❌ Command not found.")
+    else:
+        await ctx.send(f"❌ An error occurred: {str(error)}")
+
+# ---------------- Economy Commands ----------------
 
 @bot.command()
 async def balance(ctx, member: discord.Member = None):
@@ -179,7 +192,7 @@ async def leaderboard(ctx):
         desc += f"{i}. {name} — {info['wallet']+info['bank']} Pounds\n"
     await ctx.send(f"🏆 **Leaderboard**\n{desc}")
 
-# ----------------- Admin Economy Commands -----------------
+# ---------------- Admin Economy Commands ----------------
 @bot.command()
 async def addmoney(ctx, member: discord.Member, amount: int):
     if not has_role(ctx.author, FULL_ACCESS_ROLE):
@@ -188,70 +201,4 @@ async def addmoney(ctx, member: discord.Member, amount: int):
         return await ctx.send("❌ Amount must be positive.")
     ensure_user(member.id)
     change_balance(member.id, wallet_change=amount)
-    await ctx.send(f"✅ Added {amount} Pounds to {member.display_name}'s wallet.")
-
-@bot.command()
-async def takemoney(ctx, member: discord.Member, amount: int):
-    if not has_role(ctx.author, FULL_ACCESS_ROLE):
-        return await ctx.send("❌ You do not have permission to use this command.")
-    ensure_user(member.id)
-    data = load_economy()["users"][str(member.id)]
-    if amount <= 0 or amount > data['wallet']:
-        return await ctx.send("❌ Invalid amount to remove.")
-    change_balance(member.id, wallet_change=-amount)
-    await ctx.send(f"✅ Removed {amount} Pounds from {member.display_name}'s wallet.")
-
-# ----------------- Custom Help -----------------
-@bot.command(name="help")
-async def custom_help(ctx):
-    embed = discord.Embed(title="Available Commands", color=discord.Color.blurple())
-
-    if is_allowed(ctx, "full"):
-        embed.add_field(name="~~clear [num]", value="Clear messages (1-100)", inline=False)
-        embed.add_field(name="~~setdelete on/off", value="Toggle auto-deletion in channel", inline=False)
-        embed.add_field(name="~~maxmsg [num]", value="Set max allowed messages", inline=False)
-        embed.add_field(name="~~maxage [sec]", value="Set max message age in seconds", inline=False)
-        embed.add_field(name="~~setnum @user [number]", value="Assign a specific number to a user", inline=False)
-        embed.add_field(name="~~allowgrape @user", value="Give holder role", inline=False)
-        embed.add_field(name="~~disallowgrape @user", value="Remove holder role", inline=False)
-        embed.add_field(name="~~rest @user", value="Reset a member's nickname to their original number", inline=False)
-
-    if is_allowed(ctx, "lq"):
-        embed.add_field(name="~~lq @user", value="Assign low quality role and remove reader role", inline=False)
-        embed.add_field(name="~~unlq @user", value="Remove low quality role and add reader role", inline=False)
-
-    if is_allowed(ctx, "grape"):
-        embed.add_field(name="~~grape @user", value="Send a grape GIF with message", inline=False)
-
-    embed.add_field(name="~~economy", value="Show economy commands help", inline=False)
-
-    await ctx.send(embed=embed)
-
-@bot.command(name="economy")
-async def economy_help(ctx):
-    embed = discord.Embed(title="Economy Commands", color=discord.Color.green())
-    embed.add_field(name="~~balance [user]", value="Check wallet and bank", inline=False)
-    embed.add_field(name="~~work", value="Work to earn Pounds (30m cooldown)", inline=False)
-    embed.add_field(name="~~daily", value="Claim daily reward (24h cooldown)", inline=False)
-    embed.add_field(name="~~deposit <amount>", value="Deposit Pounds to bank", inline=False)
-    embed.add_field(name="~~withdraw <amount>", value="Withdraw Pounds from bank", inline=False)
-    embed.add_field(name="~~transfer <user> <amount>", value="Send Pounds to another user", inline=False)
-    embed.add_field(name="~~leaderboard", value="Show top 10 richest users", inline=False)
-    embed.add_field(name="~~addmoney @user <amount>", value="Admin: add money to a user", inline=False)
-    embed.add_field(name="~~takemoney @user <amount>", value="Admin: remove money from a user", inline=False)
-    await ctx.send(embed=embed)
-
-# --- Keep the rest of your bot code including auto_cleaner and Flask keep-alive ---
-
-webserver.keep_alive()
-
-app = Flask('')
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-Thread(target=run).start()
-
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+    await ctx.send
