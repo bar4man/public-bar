@@ -99,3 +99,24 @@ def register_commands(bot):
             return await ctx.send(f"⚠️ '{HOLDER_ROLE}' role does not exist.")
         await member.remove_roles(role)
         await ctx.send(f"🚫 {member.mention} can no longer use ~~grape.")
+
+    @bot.command()
+    async def setnum(ctx, member: discord.Member, number: int):
+        if not is_allowed(ctx, "full"):
+            return await ctx.send("❌ You do not have permission.")
+        try:
+            number_data = config.get("member_numbers", {})
+            for uid, data in number_data.items():
+                if data["number"] == number and uid != str(member.id):
+                    return await ctx.send("❌ That number is already taken.")
+            member_id = str(member.id)
+            if member_id not in number_data:
+                number_data[member_id] = {"number": number, "original": number}
+            else:
+                number_data[member_id]["number"] = number
+            config["member_numbers"] = number_data
+            save_config()
+            await member.edit(nick=str(number))
+            await ctx.send(f"✅ Set number {number} for {member.mention}.")
+        except Exception as e:
+            await ctx.send(f"❌ Error setting number: {str(e)}")
