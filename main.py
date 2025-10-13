@@ -8,7 +8,6 @@ import os
 import asyncio
 import json
 from datetime import datetime, timezone
-import re
 import webserver
 
 load_dotenv()
@@ -20,8 +19,7 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="~~", intents=intents)
-# Keep default help command, do not remove
-# bot.remove_command("help")
+# Keep default help command
 
 # ---------------- Config ----------------
 CONFIG_FILE = "config.json"
@@ -94,7 +92,6 @@ async def on_message(message):
         except:
             filter_data = {"blocked_links": [], "blocked_words": []}
 
-        url_pattern = re.compile(r'https?://\S+')
         for word in filter_data.get("blocked_words", []):
             if word.strip() and word.lower() in content:
                 await message.delete()
@@ -102,7 +99,7 @@ async def on_message(message):
                 return
 
         for link in filter_data.get("blocked_links", []):
-            if link.strip() and (link.lower() in content or url_pattern.search(content)):
+            if link.strip() and link.lower() in content:
                 await message.delete()
                 await message.channel.send(f"{message.author.mention}, links not allowed!", delete_after=5)
                 return
@@ -110,7 +107,6 @@ async def on_message(message):
     except Exception as e:
         print(f"Filter error: {e}")
 
-    # Process commands **after filtering**
     await bot.process_commands(message)
 
 # ---------------- Auto Cleaner ----------------
