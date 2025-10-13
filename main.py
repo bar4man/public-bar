@@ -179,11 +179,27 @@ async def leaderboard(ctx):
         desc += f"{i}. {name} — {info['wallet']+info['bank']} Pounds\n"
     await ctx.send(f"🏆 **Leaderboard**\n{desc}")
 
-# Backup economy every hour
-@tasks.loop(hours=1)
-async def backup_economy():
-    import shutil
-    shutil.copy(ECON_FILE, f"economy_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+# ----------------- Admin Economy Commands -----------------
+@bot.command()
+async def addmoney(ctx, member: discord.Member, amount: int):
+    if not has_role(ctx.author, FULL_ACCESS_ROLE):
+        return await ctx.send("❌ You do not have permission to use this command.")
+    if amount <= 0:
+        return await ctx.send("❌ Amount must be positive.")
+    ensure_user(member.id)
+    change_balance(member.id, wallet_change=amount)
+    await ctx.send(f"✅ Added {amount} Pounds to {member.display_name}'s wallet.")
+
+@bot.command()
+async def takemoney(ctx, member: discord.Member, amount: int):
+    if not has_role(ctx.author, FULL_ACCESS_ROLE):
+        return await ctx.send("❌ You do not have permission to use this command.")
+    ensure_user(member.id)
+    data = load_economy()["users"][str(member.id)]
+    if amount <= 0 or amount > data['wallet']:
+        return await ctx.send("❌ Invalid amount to remove.")
+    change_balance(member.id, wallet_change=-amount)
+    await ctx.send(f"✅ Removed {amount} Pounds from {member.display_name}'s wallet.")
 
 # ----------------- Custom Help -----------------
 @bot.command(name="help")
@@ -221,6 +237,8 @@ async def economy_help(ctx):
     embed.add_field(name="~~withdraw <amount>", value="Withdraw Pounds from bank", inline=False)
     embed.add_field(name="~~transfer <user> <amount>", value="Send Pounds to another user", inline=False)
     embed.add_field(name="~~leaderboard", value="Show top 10 richest users", inline=False)
+    embed.add_field(name="~~addmoney @user <amount>", value="Admin: add money to a user", inline=False)
+    embed.add_field(name="~~takemoney @user <amount>", value="Admin: remove money from a user", inline=False)
     await ctx.send(embed=embed)
 
 # --- Keep the rest of your bot code including auto_cleaner and Flask keep-alive ---
