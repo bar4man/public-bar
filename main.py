@@ -31,7 +31,6 @@ LQ_ACCESS_ROLE = "lq-access"
 FULL_ACCESS_ROLE = "bot-admin"
 HOLDER_ROLE = "holder"
 
-# Load or create config
 if not os.path.exists(CONFIG_FILE):
     with open(CONFIG_FILE, 'w') as f:
         json.dump({"auto_delete": {}, "autorole": None, "grape_gifs": [], "member_numbers": {}}, f)
@@ -42,7 +41,6 @@ def save_config():
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
-# ---------------- Permission Helpers ----------------
 def has_role(member, role_name):
     return discord.utils.get(member.roles, name=role_name) is not None
 
@@ -72,15 +70,53 @@ async def on_command_error(ctx, error):
     else:
         await ctx.send(f"❌ An error occurred: {str(error)}")
 
+# ---------------- Message Filtering ----------------
+spam_tracker = {}
+SPAM_TIMEFRAME = 5
+SPAM_LIMIT = 5
+
+@bot.event
+async def on_message(message):
+    if message.author.bot or isinstance(message.channel, discord.DMChannel):
+        return
+
+    # Spam filter
+    now = datetime.now(timezone.utc).timestamp()
+    spam_tracker.setdefault(message.author.id, [])
+    spam_tracker[message.author.id] = [t for t in spam_tracker[message.author.id] if now - t < SPAM_TIMEFRAME]
+    spam_tracker[message.author.id].append(now)
+    if len(spam_tracker[message.author.id]) > SPAM_LIMIT:
+        await message.delete()
+        await message.channel.send(f"{message.author.mention}, slow down!", delete_after=5)
+        return
+
+    # Link / word filter
+    try:
+        filter_data = json.load(open("filter.json", "r"))
+    except:
+        filter_data = {"blocked_links": [], "blocked_words": []}
+
+    content = message.content.lower()
+    for blocked in filter_data.get("blocked_links", []):
+        if blocked in content:
+            await message.delete()
+            await message.channel.send(f"{message.author.mention}, links are not allowed.", delete_after=5)
+            return
+    for word in filter_data.get("blocked_words", []):
+        if word in content:
+            await message.delete()
+            await message.channel.send(f"{message.author.mention}, watch your language.", delete_after=5)
+            return
+
+    await bot.process_commands(message)  # IMPORTANT: allow commands to run
+
 # ---------------- Auto Cleaner ----------------
 @tasks.loop(seconds=30)
 async def auto_cleaner():
     for cid, conf in config.get("auto_delete", {}).items():
-        if not conf.get("enabled"):
-            continue
+        if not conf.get("enabled"): continue
         channel = bot.get_channel(int(cid))
-        if not channel:
-            continue
+        if not channel: continue
         try:
             messages = [msg async for msg in channel.history(limit=500, oldest_first=True)]
         except discord.Forbidden:
@@ -126,9 +162,8 @@ async def custom_help(ctx):
 # ---------------- Economy ----------------
 economy.register_commands(bot)
 
+# ---------------- Keep Alive ----------------
+webserver.keep_alive()  # For Render hosting
+
 # ---------------- Run Bot ----------------
-webserver.keep_alive()  # Keep alive for Render hosting
-
-bot.run(token, log_handler=handler, log_level=logging.DEBUG)
-
-
+bot.run(token, log_handler=logging.FileHandler('discord.log', encoding='utf-8', mode='w'), log_level=logging.DEBUG)
