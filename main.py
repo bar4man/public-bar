@@ -9,6 +9,7 @@ import asyncio
 import random
 import json
 from datetime import datetime, timezone
+import re
 import webserver
 import economy
 
@@ -75,10 +76,14 @@ spam_tracker = {}
 SPAM_TIMEFRAME = 5
 SPAM_LIMIT = 5
 
+url_pattern = re.compile(r'https?://\S+')
+
 @bot.event
 async def on_message(message):
     if message.author.bot or isinstance(message.channel, discord.DMChannel):
         return
+
+    content = message.content.lower()
 
     # Spam filter
     now = datetime.now(timezone.utc).timestamp()
@@ -90,25 +95,30 @@ async def on_message(message):
         await message.channel.send(f"{message.author.mention}, slow down!", delete_after=5)
         return
 
-    # Link / word filter
+    # Link/word filter
     try:
         filter_data = json.load(open("filter.json", "r"))
     except:
         filter_data = {"blocked_links": [], "blocked_words": []}
 
-    content = message.content.lower()
-    for blocked in filter_data.get("blocked_links", []):
-        if blocked in content:
-            await message.delete()
-            await message.channel.send(f"{message.author.mention}, links are not allowed.", delete_after=5)
-            return
+    blocked = False
     for word in filter_data.get("blocked_words", []):
-        if word in content:
-            await message.delete()
-            await message.channel.send(f"{message.author.mention}, watch your language.", delete_after=5)
-            return
+        if word.strip() and word.lower() in content:
+            blocked = True
+            break
 
-    await bot.process_commands(message)  # IMPORTANT: allow commands to run
+    for link in filter_data.get("blocked_links", []):
+        if link.strip() and (link.lower() in content or url_pattern.search(content)):
+            blocked = True
+            break
+
+    if blocked:
+        await message.delete()
+        await message.channel.send(f"{message.author.mention}, message blocked.", delete_after=5)
+        return
+
+    # Process commands **after filtering**
+    await bot.process_commands(message)
 
 # ---------------- Auto Cleaner ----------------
 @tasks.loop(seconds=30)
