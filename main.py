@@ -20,7 +20,8 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="~~", intents=intents)
-bot.remove_command("help")
+# Keep default help command, do not remove
+# bot.remove_command("help")
 
 # ---------------- Config ----------------
 CONFIG_FILE = "config.json"
@@ -138,26 +139,6 @@ async def auto_cleaner():
                 try: await msg.delete(); await asyncio.sleep(1)
                 except: continue
 
-# ---------------- Custom Help ----------------
-@bot.command(name="help")
-async def custom_help(ctx):
-    try:
-        embed = discord.Embed(title="Available Commands", color=discord.Color.blurple())
-        if is_allowed(ctx, "full"):
-            embed.add_field(name="~~give/take @user amount", value="Give or take money (admin only)", inline=False)
-            embed.add_field(name="~~clear [num]", value="Clear messages (1-100)", inline=False)
-            embed.add_field(name="~~setdelete on/off", value="Toggle auto-deletion", inline=False)
-            embed.add_field(name="~~maxmsg [num]", value="Set max messages", inline=False)
-            embed.add_field(name="~~maxage [sec]", value="Set max age", inline=False)
-        if is_allowed(ctx, "lq"):
-            embed.add_field(name="~~lq @user / ~~unlq @user", value="Low quality toggle", inline=False)
-        if is_allowed(ctx, "grape"):
-            embed.add_field(name="~~grape @user", value="Send grape GIF", inline=False)
-        embed.add_field(name="~~economy", value="Show economy commands", inline=False)
-        await ctx.send(embed=embed)
-    except Exception as e:
-        await ctx.send(f"❌ Error executing help command: {str(e)}")
-
 # ---------------- Load Cogs ----------------
 async def load_cogs():
     await bot.load_extension("admin")
@@ -173,4 +154,4 @@ async def on_ready():
 webserver.keep_alive()
 
 # ---------------- Run Bot ----------------
-bot.run(TOKEN, log_handler=handler, log_level=logging.DEBUG)
+bot.run(TOKEN, log_handler=logging.FileHandler('discord.log', encoding='utf-8', mode='w'), log_level=logging.DEBUG)
