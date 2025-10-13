@@ -1,0 +1,8 @@
+{
+  "welcome_channel_id": 123456789012345678,
+  "auto_role_name": "Member",
+  "welcome_message": "Welcome to the server, {mention}!",
+  "log_channel_id": 987654321098765432,
+  "ticket_category_id": 112233445566778899,
+  "staff_role_name": "Staff"
+}

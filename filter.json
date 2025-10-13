@@ -1,0 +1,4 @@
+{
+  "blocked_words": ["badword1", "badword2", "offensiveword"],
+  "blocked_links": ["http", "discord.gg"]
+}
