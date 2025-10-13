@@ -10,6 +10,7 @@ import random
 import json
 from datetime import datetime, timezone
 import webserver
+import economy
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -24,7 +25,6 @@ bot.remove_command("help")
 
 # ---------------- Config ----------------
 CONFIG_FILE = "config.json"
-ECON_FILE = "economy.json"
 LQ_ROLE = "low quality"
 READER_ROLE = "reader"
 LQ_ACCESS_ROLE = "lq-access"
@@ -54,31 +54,6 @@ def is_allowed(ctx, command_type):
     if command_type == "grape":
         return has_role(ctx.author, HOLDER_ROLE) or has_role(ctx.author, FULL_ACCESS_ROLE)
     return False
-
-# ---------------- Economy Helpers ----------------
-def load_economy():
-    if not os.path.exists(ECON_FILE):
-        with open(ECON_FILE, 'w') as f:
-            json.dump({"users": {}}, f)
-    with open(ECON_FILE, 'r') as f:
-        return json.load(f)
-
-def save_economy(data):
-    with open(ECON_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
-
-def ensure_user(user_id):
-    data = load_economy()
-    if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"wallet": 0, "bank": 0, "last_daily": None}
-        save_economy(data)
-
-def change_balance(user_id, wallet_change=0, bank_change=0):
-    data = load_economy()
-    ensure_user(user_id)
-    data["users"][str(user_id)]["wallet"] += wallet_change
-    data["users"][str(user_id)]["bank"] += bank_change
-    save_economy(data)
 
 # ---------------- Events ----------------
 @bot.event
@@ -147,6 +122,9 @@ async def custom_help(ctx):
         await ctx.send(embed=embed)
     except Exception as e:
         await ctx.send(f"❌ Error executing help command: {str(e)}")
+
+# ---------------- Economy ----------------
+economy.register_commands(bot)
 
 # ---------------- Run Bot ----------------
 webserver.keep_alive()  # Keep alive for Render hosting
