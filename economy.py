@@ -1,19 +1,19 @@
 # economy.py
 
 import discord
-from discord.ext import tasks
-import json
 import random
+import json
 from datetime import datetime, timezone
-import asyncio
 
-CONFIG_FILE = "config.json"
 ECON_FILE = "economy.json"
 HOLDER_ROLE = "holder"
 
 # ---------------- Economy Helpers ----------------
 
 def load_economy():
+    if not os.path.exists(ECON_FILE):
+        with open(ECON_FILE, 'w') as f:
+            json.dump({"users": {}}, f)
     with open(ECON_FILE, 'r') as f:
         return json.load(f)
 
@@ -34,20 +34,20 @@ def change_balance(user_id, wallet_change=0, bank_change=0):
     data["users"][str(user_id)]["bank"] += bank_change
     save_economy(data)
 
-# ---------------- Economy Commands ----------------
-
+# ---------------- Register Commands ----------------
 def register_commands(bot):
 
-    @bot.event
-    async def on_command_error(ctx, error):
-        if isinstance(error, discord.ext.commands.MissingRequiredArgument):
-            await ctx.send(f"❌ Missing argument: {error.param.name}")
-        elif isinstance(error, discord.ext.commands.BadArgument):
-            await ctx.send(f"❌ Invalid argument type or member not found.")
-        elif isinstance(error, discord.ext.commands.CommandNotFound):
-            await ctx.send(f"❌ Unknown command. Use ~~economy to see available economy commands.")
-        else:
-            await ctx.send(f"❌ An error occurred: {str(error)}")
+    @bot.command(name="economy")
+    async def show_economy_help(ctx):
+        try:
+            embed = discord.Embed(title="Economy Commands", color=discord.Color.gold())
+            embed.add_field(name="~~balance [@user]", value="Check balance", inline=False)
+            embed.add_field(name="~~daily", value="Claim daily reward", inline=False)
+            embed.add_field(name="~~give @user [amount]", value="Give money (admin only)", inline=False)
+            embed.add_field(name="~~take @user [amount]", value="Take money (admin only)", inline=False)
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"❌ Error showing economy commands: {str(e)}")
 
     @bot.command()
     async def balance(ctx, member: discord.Member = None):
