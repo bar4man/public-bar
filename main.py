@@ -305,4 +305,20 @@ async def custom_help(ctx):
     await ctx.send(embed=embed)
 
 webserver.keep_alive()
+
+# --- keep alive web server for Render ---
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+Thread(target=run).start()
+
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
