@@ -76,46 +76,45 @@ spam_tracker = {}
 SPAM_TIMEFRAME = 5
 SPAM_LIMIT = 5
 
-url_pattern = re.compile(r'https?://\S+')
-
 @bot.event
 async def on_message(message):
     if message.author.bot or isinstance(message.channel, discord.DMChannel):
         return
 
-    content = message.content.lower()
-
-    # Spam filter
-    now = datetime.now(timezone.utc).timestamp()
-    spam_tracker.setdefault(message.author.id, [])
-    spam_tracker[message.author.id] = [t for t in spam_tracker[message.author.id] if now - t < SPAM_TIMEFRAME]
-    spam_tracker[message.author.id].append(now)
-    if len(spam_tracker[message.author.id]) > SPAM_LIMIT:
-        await message.delete()
-        await message.channel.send(f"{message.author.mention}, slow down!", delete_after=5)
-        return
-
-    # Link/word filter
     try:
-        filter_data = json.load(open("filter.json", "r"))
-    except:
-        filter_data = {"blocked_links": [], "blocked_words": []}
+        content = message.content.lower()
 
-    blocked = False
-    for word in filter_data.get("blocked_words", []):
-        if word.strip() and word.lower() in content:
-            blocked = True
-            break
+        # Spam filter
+        now = datetime.now(timezone.utc).timestamp()
+        spam_tracker.setdefault(message.author.id, [])
+        spam_tracker[message.author.id] = [t for t in spam_tracker[message.author.id] if now - t < SPAM_TIMEFRAME]
+        spam_tracker[message.author.id].append(now)
+        if len(spam_tracker[message.author.id]) > SPAM_LIMIT:
+            await message.delete()
+            await message.channel.send(f"{message.author.mention}, slow down!", delete_after=5)
+            return
 
-    for link in filter_data.get("blocked_links", []):
-        if link.strip() and (link.lower() in content or url_pattern.search(content)):
-            blocked = True
-            break
+        # Link/word filter
+        try:
+            filter_data = json.load(open("filter.json", "r"))
+        except:
+            filter_data = {"blocked_links": [], "blocked_words": []}
 
-    if blocked:
-        await message.delete()
-        await message.channel.send(f"{message.author.mention}, message blocked.", delete_after=5)
-        return
+        url_pattern = re.compile(r'https?://\S+')
+        for word in filter_data.get("blocked_words", []):
+            if word.strip() and word.lower() in content:
+                await message.delete()
+                await message.channel.send(f"{message.author.mention}, watch your language!", delete_after=5)
+                return
+
+        for link in filter_data.get("blocked_links", []):
+            if link.strip() and (link.lower() in content or url_pattern.search(content)):
+                await message.delete()
+                await message.channel.send(f"{message.author.mention}, links not allowed!", delete_after=5)
+                return
+
+    except Exception as e:
+        print(f"Filter error: {e}")
 
     # Process commands **after filtering**
     await bot.process_commands(message)
@@ -173,7 +172,7 @@ async def custom_help(ctx):
 economy.register_commands(bot)
 
 # ---------------- Keep Alive ----------------
-webserver.keep_alive()  # For Render hosting
+webserver.keep_alive()
 
 # ---------------- Run Bot ----------------
 bot.run(token, log_handler=logging.FileHandler('discord.log', encoding='utf-8', mode='w'), log_level=logging.DEBUG)
