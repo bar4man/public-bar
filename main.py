@@ -11,7 +11,6 @@ import json
 from datetime import datetime, timezone
 import webserver
 import economy
-import os
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -131,4 +130,5 @@ economy.register_commands(bot)
 webserver.keep_alive()  # Keep alive for Render hosting
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
+
 
