@@ -1,3 +1,5 @@
+# main.py
+
 import discord
 from discord.ext import commands, tasks
 import logging
@@ -6,7 +8,8 @@ import os
 import asyncio
 import random
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import time
 import webserver
 
 load_dotenv()
@@ -27,6 +30,10 @@ LQ_ACCESS_ROLE = "lq-access"
 FULL_ACCESS_ROLE = "bot-admin"
 HOLDER_ROLE = "holder"
 
+# Economy file
+ECON_FILE = "economy.json"
+
+# Ensure config exists
 if not os.path.exists(CONFIG_FILE):
     with open(CONFIG_FILE, 'w') as f:
         json.dump({"auto_delete": {}, "autorole": None, "grape_gifs": [], "member_numbers": {}}, f)
@@ -34,9 +41,26 @@ if not os.path.exists(CONFIG_FILE):
 with open(CONFIG_FILE, 'r') as f:
     config = json.load(f)
 
+# Ensure economy file exists
+if not os.path.exists(ECON_FILE):
+    with open(ECON_FILE, 'w') as f:
+        json.dump({}, f)
+
+with open(ECON_FILE, 'r') as f:
+    try:
+        economy = json.load(f)
+    except:
+        economy = {}
+
+
 def save_config():
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
+
+def save_economy():
+    with open(ECON_FILE, 'w') as f:
+        json.dump(economy, f, indent=2)
+
 
 def has_role(member, role_name):
     return discord.utils.get(member.roles, name=role_name) is not None
@@ -50,10 +74,58 @@ def is_allowed(ctx, command_type):
         return has_role(ctx.author, HOLDER_ROLE) or has_role(ctx.author, FULL_ACCESS_ROLE)
     return False
 
+# Economy helpers
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def ensure_user(uid: str):
+    if uid not in economy:
+        economy[uid] = {"wallet": 0, "bank": 0, "last_work": None, "last_daily": None}
+        return True
+    return False
+
+def get_balances(uid: str):
+    ensure_user(uid)
+    data = economy[uid]
+    return data.get("wallet", 0), data.get("bank", 0)
+
+def change_balance(uid: str, wallet_change=0, bank_change=0):
+    ensure_user(uid)
+    economy[uid]["wallet"] = max(0, economy[uid].get("wallet", 0) + int(wallet_change))
+    economy[uid]["bank"] = max(0, economy[uid].get("bank", 0) + int(bank_change))
+    save_economy()
+
+def set_last_work(uid: str):
+    ensure_user(uid)
+    economy[uid]["last_work"] = _now_iso()
+    save_economy()
+
+def set_last_daily(uid: str):
+    ensure_user(uid)
+    economy[uid]["last_daily"] = _now_iso()
+    save_economy()
+
+def parse_iso(iso_str):
+    if not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str)
+    except:
+        return None
+
+# -------------- Events --------------
+
 @bot.event
 async def on_ready():
     print(f"Bot ready as {bot.user.name}")
     auto_cleaner.start()
+
+    # sync commands if any (if you later add app commands)
+    try:
+        await bot.tree.sync()
+    except Exception:
+        pass
 
     number_data = config.get("member_numbers", {})
     for member in bot.get_all_members():
@@ -96,6 +168,11 @@ async def on_member_join(member):
     except:
         pass
 
+@bot.event
+async def on_member_remove(member):
+    # keep previous behaviour
+    pass
+
 @tasks.loop(seconds=30)
 async def auto_cleaner():
     for cid, conf in config.get("auto_delete", {}).items():
@@ -110,7 +187,7 @@ async def auto_cleaner():
         except discord.Forbidden:
             continue
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         if conf.get("max_age"):
             for msg in messages:
@@ -130,6 +207,8 @@ async def auto_cleaner():
                     await asyncio.sleep(1)
                 except:
                     continue
+
+# -------------- Commands (existing) --------------
 
 @bot.command()
 async def clear(ctx, amount: int):
@@ -277,6 +356,8 @@ async def rest(ctx, member: discord.Member):
     else:
         await ctx.send("❌ This user does not have a number registered.")
 
+# -------------- Help --------------
+
 @bot.command(name="help")
 async def custom_help(ctx):
     if not any(has_role(ctx.author, r) for r in [FULL_ACCESS_ROLE, LQ_ACCESS_ROLE, HOLDER_ROLE]):
@@ -302,7 +383,136 @@ async def custom_help(ctx):
     if is_allowed(ctx, "grape"):
         embed.add_field(name="~~grape @user", value="Send a grape GIF with message", inline=False)
 
+    # Economy section
+    embed.add_field(name="💰 Economy", value="~~balance [user] | ~~work | ~~daily | ~~deposit <amt> | ~~withdraw <amt> | ~~transfer <user> <amt> | ~~leaderboard", inline=False)
+
     await ctx.send(embed=embed)
+
+# -------------- Economy Commands --------------
+
+WORK_COOLDOWN = 30 * 60  # seconds (30 minutes)
+DAILY_COOLDOWN = 24 * 60 * 60  # seconds (24 hours)
+
+@bot.command()
+async def balance(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    uid = str(target.id)
+    ensure_user(uid)
+    wallet, bank = get_balances(uid)
+    embed = discord.Embed(title=f"{target.display_name}'s Balance", color=discord.Color.gold())
+    embed.add_field(name="Wallet", value=f"{wallet} coins", inline=True)
+    embed.add_field(name="Bank", value=f"{bank} coins", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def work(ctx):
+    uid = str(ctx.author.id)
+    ensure_user(uid)
+    last = parse_iso(economy[uid].get("last_work"))
+    now = datetime.now(timezone.utc)
+    if last and (now - last).total_seconds() < WORK_COOLDOWN:
+        remaining = WORK_COOLDOWN - int((now - last).total_seconds())
+        mins = remaining // 60
+        secs = remaining % 60
+        return await ctx.send(f"🕒 You must wait {mins}m {secs}s before working again.")
+
+    earned = random.randint(20, 100)
+    change_balance(uid, wallet_change=earned)
+    set_last_work(uid)
+    await ctx.send(f"💼 You worked and earned {earned} coins!")
+
+@bot.command()
+async def daily(ctx):
+    uid = str(ctx.author.id)
+    ensure_user(uid)
+    last = parse_iso(economy[uid].get("last_daily"))
+    now = datetime.now(timezone.utc)
+    if last and (now - last).total_seconds() < DAILY_COOLDOWN:
+        remaining = DAILY_COOLDOWN - int((now - last).total_seconds())
+        hours = remaining // 3600
+        mins = (remaining % 3600) // 60
+        return await ctx.send(f"⏳ You must wait {hours}h {mins}m before claiming daily again.")
+
+    reward = random.randint(200, 500)
+    change_balance(uid, wallet_change=reward)
+    set_last_daily(uid)
+    await ctx.send(f"🎁 You claimed your daily reward of {reward} coins!")
+
+@bot.command()
+async def deposit(ctx, amount: int):
+    uid = str(ctx.author.id)
+    ensure_user(uid)
+    wallet, bank = get_balances(uid)
+    if amount <= 0:
+        return await ctx.send("❌ Amount must be positive.")
+    if wallet < amount:
+        return await ctx.send("❌ You don't have enough in your wallet.")
+    change_balance(uid, wallet_change=-amount, bank_change=amount)
+    await ctx.send(f"🏦 Deposited {amount} coins to your bank.")
+
+@bot.command()
+async def withdraw(ctx, amount: int):
+    uid = str(ctx.author.id)
+    ensure_user(uid)
+    wallet, bank = get_balances(uid)
+    if amount <= 0:
+        return await ctx.send("❌ Amount must be positive.")
+    if bank < amount:
+        return await ctx.send("❌ You don't have enough in your bank.")
+    change_balance(uid, wallet_change=amount, bank_change=-amount)
+    await ctx.send(f"💸 Withdrew {amount} coins to your wallet.")
+
+@bot.command()
+async def transfer(ctx, member: discord.Member, amount: int):
+    if member.bot:
+        return await ctx.send("❌ You cannot transfer to bots.")
+    uid = str(ctx.author.id)
+    target_id = str(member.id)
+    ensure_user(uid)
+    ensure_user(target_id)
+    wallet, _ = get_balances(uid)
+    if amount <= 0:
+        return await ctx.send("❌ Amount must be positive.")
+    if wallet < amount:
+        return await ctx.send("❌ You don't have enough in your wallet.")
+    change_balance(uid, wallet_change=-amount)
+    change_balance(target_id, wallet_change=amount)
+    await ctx.send(f"✅ Sent {amount} coins to {member.mention}.")
+
+@bot.command()
+async def leaderboard(ctx):
+    # show top 10 by total (wallet + bank)
+    snapshot = []
+    for uid, data in economy.items():
+        total = data.get("wallet", 0) + data.get("bank", 0)
+        snapshot.append((uid, total))
+    snapshot.sort(key=lambda x: x[1], reverse=True)
+    top = snapshot[:10]
+    embed = discord.Embed(title="🏆 Economy Leaderboard", color=discord.Color.gold())
+    if not top:
+        embed.description = "No data yet."
+    else:
+        desc = ""
+        for i, (uid, total) in enumerate(top, start=1):
+            member = ctx.guild.get_member(int(uid))
+            name = member.display_name if member else f"User {uid}"
+            desc += f"**{i}. {name}** — {total} coins\n"
+        embed.description = desc
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def reset_economy(ctx):
+    if not is_allowed(ctx, "full"):
+        return await ctx.send("❌ You do not have permission.")
+    economy.clear()
+    save_economy()
+    await ctx.send("✅ Economy has been reset.")
+
+# -------------- Remaining existing commands --------------
+# lq/unlq/allowgrape/disallowgrape/rest implemented earlier
+# (they remain above in this file)
+
+# -------------- Keep-alive & Run --------------
 
 webserver.keep_alive()
 
