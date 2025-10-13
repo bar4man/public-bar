@@ -3,23 +3,15 @@
 import discord
 from discord.ext import commands
 import json
-from datetime import datetime, timezone
-
-CONFIG_FILE = "config.json"
-
-def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+import os
 
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ---------------- Permissions ----------------
     def is_admin(self, ctx):
         return discord.utils.get(ctx.author.roles, name="bot-admin") is not None
 
-    # ---------------- Commands ----------------
     @commands.command(name="give")
     async def give_money(self, ctx, member: discord.Member, amount: int):
         if not self.is_admin(ctx):
@@ -60,6 +52,5 @@ class Admin(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error taking money: {str(e)}")
 
-# ---------------- Setup ----------------
 async def setup(bot):
     await bot.add_cog(Admin(bot))
