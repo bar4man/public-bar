@@ -3,6 +3,7 @@
 import discord
 import random
 import json
+import os
 from datetime import datetime, timezone
 
 ECON_FILE = "economy.json"
