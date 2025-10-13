@@ -5,7 +5,6 @@ from discord.ext import commands
 import json
 import os
 import random
-from datetime import datetime, timezone
 
 class Economy(commands.Cog):
     def __init__(self, bot):
@@ -23,7 +22,6 @@ class Economy(commands.Cog):
         with open(self.econ_file, "w") as f:
             json.dump(data, f, indent=2)
 
-    # ---------------- Commands ----------------
     @commands.command(name="balance")
     async def balance(self, ctx):
         try:
@@ -39,7 +37,7 @@ class Economy(commands.Cog):
         try:
             data = self.load_data()
             uid = str(ctx.author.id)
-            amount = random.randint(100, 200) * 2  # double payout
+            amount = random.randint(100, 200) * 2
             data.setdefault(uid, {}).setdefault("wallet", 0)
             data[uid]["wallet"] += amount
             self.save_data(data)
@@ -58,14 +56,4 @@ class Economy(commands.Cog):
             wallet_from = data.get(uid_from, {}).get("wallet", 0)
             if wallet_from < amount:
                 return await ctx.send("❌ You do not have enough money.")
-            data.setdefault(uid_to, {}).setdefault("wallet", 0)
-            data[uid_from]["wallet"] -= amount
-            data[uid_to]["wallet"] += amount
-            self.save_data(data)
-            await ctx.send(f"✅ {ctx.author.mention} paid {amount}£ to {member.mention}")
-        except Exception as e:
-            await ctx.send(f"❌ Error paying: {str(e)}")
-
-# ---------------- Setup ----------------
-async def setup(bot):
-    await bot.add_cog(Economy(bot))
+            data.setdefault(uid_to, {}).setdefault("
