@@ -2,7 +2,8 @@
   "auto_delete": {
     }
   },
-  "autorole": "costumer",       // Role assigned to new members
-  "grape_gifs": [],           // Optional GIF links for events
-  "member_numbers": {}        // Tracks member numbers assigned to users
+  "autorole": "costumer",       
+  "grape_gifs": [],           
+  "member_numbers": {}        
 }
+
