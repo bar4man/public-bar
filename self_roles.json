@@ -1,7 +1,0 @@
-{
-  "roles": [
-    { "name": "Gamer", "emoji": "🎮" },
-    { "name": "Artist", "emoji": "🎨" },
-    { "name": "Developer", "emoji": "💻" }
-  ]
-}
