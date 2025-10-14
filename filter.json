@@ -1,0 +1,10 @@
+{
+  "blocked_words": [
+    "nigger",
+    "im bored"
+  ],
+  "blocked_links": [
+    "example.com",
+    "malwarelink.com"
+  ]
+}
