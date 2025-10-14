@@ -24,7 +24,6 @@ intents.members = True
 
 # Bot setup
 bot = commands.Bot(command_prefix="~~", intents=intents)
-bot.remove_command("help")  # (optional) remove default help to make custom one later
 
 # ---------------- Config ----------------
 CONFIG_FILE = "config.json"
@@ -198,3 +197,4 @@ if KEEP_ALIVE:
 
 # ---------------- Run ----------------
 bot.run(TOKEN)
+
