@@ -7,7 +7,7 @@ import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 import webserver
-import aiofiles  # Added for economy system
+import aiofiles
 
 # ---------------- Setup ----------------
 load_dotenv()
@@ -43,6 +43,7 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
+# ---------------- Bot Class (Define FIRST) ----------------
 class Bot(commands.Bot):
     """Custom bot class with additional utilities."""
     
@@ -54,8 +55,9 @@ class Bot(commands.Bot):
             case_insensitive=True
         )
         self.start_time = datetime.now(timezone.utc)
-        self.config_manager = ConfigManager()
-        self.message_filter = MessageFilter()
+        # These will be set after the classes are defined
+        self.config_manager = None
+        self.message_filter = None
     
     async def on_ready(self):
         """Enhanced on_ready with more detailed startup info."""
@@ -71,11 +73,12 @@ class Bot(commands.Bot):
             status=discord.Status.online
         )
 
+# Create bot instance FIRST
 bot = Bot()
 
-# ---------------- Enhanced Config Manager ----------------
+# ---------------- Config Manager ----------------
 class ConfigManager:
-    def __init__(self, filename: str = "config.json"):
+    def __init__(self, filename="config.json"):
         self.filename = filename
         self.lock = asyncio.Lock()
         self.default_config = {
@@ -96,92 +99,101 @@ class ConfigManager:
                 json.dump(self.default_config, f, indent=2)
             logging.info(f"Created new config file: {self.filename}")
     
-    async def load(self) -> Dict[str, Any]:
+    async def load(self):
         """Load configuration from file with error recovery."""
         async with self.lock:
             try:
                 with open(self.filename, "r") as f:
                     config = json.load(f)
-                
-                # Merge with default config to ensure all keys exist
                 return {**self.default_config, **config}
-                
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 logging.error(f"Config load error: {e}, using defaults")
                 return self.default_config.copy()
     
-    async def save(self, data: Dict[str, Any]) -> bool:
+    async def save(self, data):
         """Save configuration to file with validation."""
         async with self.lock:
             try:
-                # Ensure all default keys are present
                 validated_data = {**self.default_config, **data}
-                
                 with open(self.filename, "w") as f:
                     json.dump(validated_data, f, indent=2, ensure_ascii=False)
-                
                 logging.info("Config saved successfully")
                 return True
-                
             except Exception as e:
                 logging.error(f"Config save error: {e}")
                 return False
-    
-    async def update_section(self, section: str, data: Any) -> bool:
-        """Update a specific config section."""
-        current_config = await self.load()
-        current_config[section] = data
-        return await self.save(current_config)
 
-config_manager = ConfigManager()
-
-# ---------------- Enhanced Permissions Manager ----------------
-class PermissionManager:
+# ---------------- Message Filter ----------------
+class MessageFilter:
     def __init__(self):
-        self.FULL_ACCESS_ROLE = "bot-admin"
-        self.LQ_ACCESS_ROLE = "lq-access"
-        self.HOLDER_ROLE = "holder"
+        self.spam_tracker = {}
+        self.SPAM_TIMEFRAME = 5
+        self.SPAM_LIMIT = 5
+        self._last_cleanup = datetime.now(timezone.utc).timestamp()
     
-    @staticmethod
-    def has_role(member: discord.Member, role_name: str) -> bool:
-        """Check if member has a specific role."""
-        return discord.utils.get(member.roles, name=role_name) is not None
+    def _load_filter_data(self):
+        """Load filter data from file with caching."""
+        try:
+            with open("filter.json", "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"blocked_links": [], "blocked_words": []}
     
-    def is_allowed(self, member: discord.Member, command_type: str) -> bool:
-        """Check if member has permission for command type."""
-        if member.guild_permissions.administrator:
-            return True
-            
-        if command_type == "full":
-            return self.has_role(member, self.FULL_ACCESS_ROLE)
-        elif command_type == "lq":
-            return (self.has_role(member, self.LQ_ACCESS_ROLE) or 
-                   self.has_role(member, self.FULL_ACCESS_ROLE))
-        elif command_type == "grape":
-            return (self.has_role(member, self.HOLDER_ROLE) or 
-                   self.has_role(member, self.FULL_ACCESS_ROLE))
-        return False
-    
-    async def get_allowed_roles(self, guild: discord.Guild, command_type: str) -> List[discord.Role]:
-        """Get list of roles that have permission for a command type."""
-        role_names = []
-        if command_type == "full":
-            role_names = [self.FULL_ACCESS_ROLE]
-        elif command_type == "lq":
-            role_names = [self.LQ_ACCESS_ROLE, self.FULL_ACCESS_ROLE]
-        elif command_type == "grape":
-            role_names = [self.HOLDER_ROLE, self.FULL_ACCESS_ROLE]
+    def is_spam(self, user_id):
+        """Check if user is spamming with automatic cleanup."""
+        now = datetime.now(timezone.utc).timestamp()
         
-        return [role for role in guild.roles if role.name in role_names]
-
-permission_manager = PermissionManager()
-
-# ---------------- Enhanced Error Handling ----------------
-@bot.event
-async def on_command_error(ctx: commands.Context, error: Exception):
-    """Global error handler with enhanced error reporting."""
+        # Cleanup old entries every 5 minutes
+        if now - self._last_cleanup > 300:
+            self._cleanup_old_entries()
+            self._last_cleanup = now
+        
+        self.spam_tracker.setdefault(user_id, [])
+        self.spam_tracker[user_id] = [
+            t for t in self.spam_tracker[user_id] 
+            if now - t < self.SPAM_TIMEFRAME
+        ]
+        
+        self.spam_tracker[user_id].append(now)
+        return len(self.spam_tracker[user_id]) > self.SPAM_LIMIT
     
-    # Ignore if we have a local error handler
+    def _cleanup_old_entries(self):
+        """Clean up old spam tracker entries to prevent memory leaks."""
+        now = datetime.now(timezone.utc).timestamp()
+        cutoff = now - 300
+        self.spam_tracker = {
+            user_id: timestamps 
+            for user_id, timestamps in self.spam_tracker.items()
+            if any(t > cutoff for t in timestamps)
+        }
+    
+    def contains_blocked_content(self, content):
+        """Check if message contains blocked words or links."""
+        filter_data = self._load_filter_data()
+        content_lower = content.lower()
+        
+        for word in filter_data.get("blocked_words", []):
+            if word and word.lower() in content_lower:
+                return True, "word"
+        
+        for link in filter_data.get("blocked_links", []):
+            if link and link.lower() in content_lower:
+                return True, "link"
+        
+        return False, None
+
+# ---------------- Initialize Managers ----------------
+config_manager = ConfigManager()
+message_filter = MessageFilter()
+
+# Set the managers on the bot instance
+bot.config_manager = config_manager
+bot.message_filter = message_filter
+
+# ---------------- Error Handling ----------------
+@bot.event
+async def on_command_error(ctx, error):
+    """Global error handler with enhanced error reporting."""
     if hasattr(ctx.command, 'on_error'):
         return
     
@@ -197,7 +209,6 @@ async def on_command_error(ctx: commands.Context, error: Exception):
         error_embed.description = "Invalid argument type or member not found."
         
     elif isinstance(error, commands.CommandNotFound):
-        # Silently ignore unknown commands
         return
         
     elif isinstance(error, commands.MissingPermissions):
@@ -218,7 +229,6 @@ async def on_command_error(ctx: commands.Context, error: Exception):
         error_embed.description = "This command can only be used in servers."
         
     else:
-        # Log unexpected errors
         logging.error(f"Unexpected error in command {ctx.command}: {error}", exc_info=error)
         error_embed.title = "⚠️ Unexpected Error"
         error_embed.description = "An unexpected error occurred. The issue has been logged."
@@ -227,84 +237,16 @@ async def on_command_error(ctx: commands.Context, error: Exception):
     try:
         await ctx.send(embed=error_embed, delete_after=10)
     except discord.Forbidden:
-        pass  # Can't send messages in this channel
+        pass
 
-# ---------------- Enhanced Message Filter ----------------
-class MessageFilter:
-    def __init__(self):
-        self.spam_tracker: Dict[int, List[float]] = {}
-        self.SPAM_TIMEFRAME = 5  # seconds
-        self.SPAM_LIMIT = 5
-        self._last_cleanup = datetime.now(timezone.utc).timestamp()
-    
-    def _load_filter_data(self) -> Dict[str, List[str]]:
-        """Load filter data from file with caching."""
-        try:
-            with open("filter.json", "r") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"blocked_links": [], "blocked_words": []}
-    
-    def is_spam(self, user_id: int) -> bool:
-        """Check if user is spamming with automatic cleanup."""
-        now = datetime.now(timezone.utc).timestamp()
-        
-        # Cleanup old entries every 5 minutes
-        if now - self._last_cleanup > 300:
-            self._cleanup_old_entries()
-            self._last_cleanup = now
-        
-        # Track user messages
-        self.spam_tracker.setdefault(user_id, [])
-        self.spam_tracker[user_id] = [
-            t for t in self.spam_tracker[user_id] 
-            if now - t < self.SPAM_TIMEFRAME
-        ]
-        
-        # Add current timestamp
-        self.spam_tracker[user_id].append(now)
-        
-        return len(self.spam_tracker[user_id]) > self.SPAM_LIMIT
-    
-    def _cleanup_old_entries(self):
-        """Clean up old spam tracker entries to prevent memory leaks."""
-        now = datetime.now(timezone.utc).timestamp()
-        cutoff = now - 300  # 5 minutes
-        
-        self.spam_tracker = {
-            user_id: timestamps 
-            for user_id, timestamps in self.spam_tracker.items()
-            if any(t > cutoff for t in timestamps)
-        }
-    
-    def contains_blocked_content(self, content: str) -> Tuple[bool, Optional[str]]:
-        """Check if message contains blocked words or links."""
-        filter_data = self._load_filter_data()
-        content_lower = content.lower()
-        
-        # Check blocked words
-        for word in filter_data.get("blocked_words", []):
-            if word and word.lower() in content_lower:
-                return True, "word"
-        
-        # Check blocked links
-        for link in filter_data.get("blocked_links", []):
-            if link and link.lower() in content_lower:
-                return True, "link"
-        
-        return False, None
-
-message_filter = MessageFilter()
-
+# ---------------- Message Filtering ----------------
 @bot.event
-async def on_message(message: discord.Message):
+async def on_message(message):
     """Enhanced message handler with better filtering."""
-    # Ignore bots and DMs
     if message.author.bot or isinstance(message.channel, discord.DMChannel):
         return
     
     try:
-        # Spam detection
         if message_filter.is_spam(message.author.id):
             await message.delete()
             warning_msg = await message.channel.send(
@@ -313,7 +255,6 @@ async def on_message(message: discord.Message):
             )
             return
         
-        # Content filtering
         is_blocked, block_type = message_filter.contains_blocked_content(message.content)
         if is_blocked:
             await message.delete()
@@ -331,7 +272,7 @@ async def on_message(message: discord.Message):
     
     await bot.process_commands(message)
 
-# ---------------- Enhanced Auto Cleaner Task ----------------
+# ---------------- Auto Cleaner Task ----------------
 @tasks.loop(minutes=1)
 async def auto_cleaner():
     """Enhanced auto cleaner with better error handling and logging."""
@@ -370,18 +311,16 @@ async def auto_cleaner():
     except Exception as e:
         logging.error(f"Auto cleaner task error: {e}")
 
-async def _clean_channel(channel: discord.TextChannel, settings: Dict[str, Any]) -> int:
+async def _clean_channel(channel, settings):
     """Clean a single channel based on settings."""
     deleted_count = 0
     now = datetime.now(timezone.utc)
     
     try:
-        # Get messages (limited to 100 for performance)
         messages = [msg async for msg in channel.history(limit=100, oldest_first=True)]
     except discord.Forbidden:
         raise
     
-    # Age-based cleanup
     max_age = settings.get("max_age")
     if max_age:
         for msg in messages:
@@ -390,13 +329,12 @@ async def _clean_channel(channel: discord.TextChannel, settings: Dict[str, Any])
                 try:
                     await msg.delete()
                     deleted_count += 1
-                    await asyncio.sleep(0.5)  # More conservative rate limiting
+                    await asyncio.sleep(0.5)
                 except discord.NotFound:
                     pass
                 except Exception as e:
                     logging.warning(f"Error deleting old message: {e}")
     
-    # Count-based cleanup
     max_messages = settings.get("max_messages")
     if max_messages and len(messages) > max_messages:
         to_delete = messages[:len(messages) - max_messages]
@@ -417,16 +355,16 @@ async def before_auto_cleaner():
     """Wait for bot to be ready before starting auto cleaner."""
     await bot.wait_until_ready()
 
-# ---------------- Enhanced Help Command ----------------
+# ---------------- Help Command ----------------
 @bot.command(name="help")
-async def help_command(ctx: commands.Context, command_name: str = None):
+async def help_command(ctx, command_name: str = None):
     """Enhanced help command with better organization and formatting."""
     if command_name:
         await _show_command_help(ctx, command_name)
     else:
         await _show_general_help(ctx)
 
-async def _show_command_help(ctx: commands.Context, command_name: str):
+async def _show_command_help(ctx, command_name: str):
     """Show help for a specific command."""
     cmd = bot.get_command(command_name.lower())
     
@@ -455,7 +393,7 @@ async def _show_command_help(ctx: commands.Context, command_name: str):
     
     await ctx.send(embed=embed)
 
-async def _show_general_help(ctx: commands.Context):
+async def _show_general_help(ctx):
     """Show general help with categorized commands."""
     embed = discord.Embed(
         title="🤖 Bot Commands Help",
@@ -463,7 +401,6 @@ async def _show_general_help(ctx: commands.Context):
         color=discord.Color.blue()
     )
     
-    # Group commands by cog with better formatting
     cogs = {}
     for command in bot.commands:
         if command.hidden:
@@ -488,7 +425,7 @@ async def _show_general_help(ctx: commands.Context):
     embed.set_footer(text=f"Command prefix: ~~ | Total commands: {len(bot.commands)}")
     await ctx.send(embed=embed)
 
-# ---------------- Enhanced Cog Loader ----------------
+# ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
     cogs = ["admin", "economy"]
@@ -496,7 +433,6 @@ async def load_cogs():
     
     for cog in cogs:
         try:
-            # Check for economy cog dependencies
             if cog == "economy":
                 try:
                     import aiofiles
@@ -534,7 +470,6 @@ async def setup_hook():
     """Enhanced setup hook with data directory initialization."""
     logging.info("🔧 Starting bot setup...")
     
-    # Ensure data directory exists for economy system
     os.makedirs("data", exist_ok=True)
     logging.info("📁 Data directory initialized")
     
@@ -549,7 +484,6 @@ async def on_ready():
     logging.info(f"✅ Bot is ready as {bot.user} (ID: {bot.user.id})")
     logging.info(f"📊 Connected to {len(bot.guilds)} guild(s)")
     
-    # Set bot status
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
@@ -559,18 +493,18 @@ async def on_ready():
     )
 
 @bot.event
-async def on_guild_join(guild: discord.Guild):
+async def on_guild_join(guild):
     """Log when bot joins a new guild."""
     logging.info(f"➕ Joined guild: {guild.name} (ID: {guild.id}) with {guild.member_count} members")
 
 @bot.event
-async def on_guild_remove(guild: discord.Guild):
+async def on_guild_remove(guild):
     """Log when bot leaves a guild."""
     logging.info(f"➖ Left guild: {guild.name} (ID: {guild.id})")
 
 # ---------------- Utility Commands ----------------
 @bot.command(name="ping", brief="Check bot latency")
-async def ping(ctx: commands.Context):
+async def ping(ctx):
     """Check the bot's latency and response time."""
     start_time = ctx.message.created_at
     msg = await ctx.send("🏓 Pinging...")
@@ -590,12 +524,10 @@ async def ping(ctx: commands.Context):
 
 @bot.command(name="reload", brief="Reload all cogs")
 @commands.has_permissions(administrator=True)
-async def reload(ctx: commands.Context):
+async def reload(ctx):
     """Reload all cogs (Admin only)."""
     msg = await ctx.send("🔄 Reloading cogs...")
-    
     await reload_cogs()
-    
     await msg.edit(content="✅ All cogs reloaded successfully!")
 
 # ---------------- Keep Alive ----------------
