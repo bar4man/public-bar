@@ -43,40 +43,7 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# ---------------- Bot Class (Define FIRST) ----------------
-class Bot(commands.Bot):
-    """Custom bot class with additional utilities."""
-    
-    def __init__(self):
-        super().__init__(
-            command_prefix="~~",
-            intents=intents,
-            help_command=None,
-            case_insensitive=True
-        )
-        self.start_time = datetime.now(timezone.utc)
-        # These will be set after the classes are defined
-        self.config_manager = None
-        self.message_filter = None
-    
-    async def on_ready(self):
-        """Enhanced on_ready with more detailed startup info."""
-        logging.info(f"✅ Bot is ready as {self.user} (ID: {self.user.id})")
-        logging.info(f"📊 Connected to {len(self.guilds)} guild(s)")
-        
-        # Set bot status
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="~~help | Economy & Games"
-            ),
-            status=discord.Status.online
-        )
-
-# Create bot instance FIRST
-bot = Bot()
-
-# ---------------- Config Manager ----------------
+# ---------------- Manager Classes (Define FIRST) ----------------
 class ConfigManager:
     def __init__(self, filename="config.json"):
         self.filename = filename
@@ -123,7 +90,6 @@ class ConfigManager:
                 logging.error(f"Config save error: {e}")
                 return False
 
-# ---------------- Message Filter ----------------
 class MessageFilter:
     def __init__(self):
         self.spam_tracker = {}
@@ -182,13 +148,42 @@ class MessageFilter:
         
         return False, None
 
-# ---------------- Initialize Managers ----------------
+# ---------------- Create Manager Instances ----------------
 config_manager = ConfigManager()
 message_filter = MessageFilter()
 
-# Set the managers on the bot instance
-bot.config_manager = config_manager
-bot.message_filter = message_filter
+# ---------------- Bot Class (Define AFTER managers) ----------------
+class Bot(commands.Bot):
+    """Custom bot class with additional utilities."""
+    
+    def __init__(self):
+        super().__init__(
+            command_prefix="~~",
+            intents=intents,
+            help_command=None,
+            case_insensitive=True
+        )
+        self.start_time = datetime.now(timezone.utc)
+        # Now ConfigManager and MessageFilter are defined, so we can use them
+        self.config_manager = config_manager
+        self.message_filter = message_filter
+    
+    async def on_ready(self):
+        """Enhanced on_ready with more detailed startup info."""
+        logging.info(f"✅ Bot is ready as {self.user} (ID: {self.user.id})")
+        logging.info(f"📊 Connected to {len(self.guilds)} guild(s)")
+        
+        # Set bot status
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="~~help | Economy & Games"
+            ),
+            status=discord.Status.online
+        )
+
+# Create bot instance AFTER everything is defined
+bot = Bot()
 
 # ---------------- Error Handling ----------------
 @bot.event
@@ -247,15 +242,15 @@ async def on_message(message):
         return
     
     try:
-        if message_filter.is_spam(message.author.id):
+        if bot.message_filter.is_spam(message.author.id):
             await message.delete()
             warning_msg = await message.channel.send(
-                f"{message.author.mention}, slow down! ⏰ (Rate limit: {message_filter.SPAM_LIMIT} messages per {message_filter.SPAM_TIMEFRAME}s)",
+                f"{message.author.mention}, slow down! ⏰ (Rate limit: {bot.message_filter.SPAM_LIMIT} messages per {bot.message_filter.SPAM_TIMEFRAME}s)",
                 delete_after=5
             )
             return
         
-        is_blocked, block_type = message_filter.contains_blocked_content(message.content)
+        is_blocked, block_type = bot.message_filter.contains_blocked_content(message.content)
         if is_blocked:
             await message.delete()
             if block_type == "word":
@@ -277,7 +272,7 @@ async def on_message(message):
 async def auto_cleaner():
     """Enhanced auto cleaner with better error handling and logging."""
     try:
-        config = await config_manager.load()
+        config = await bot.config_manager.load()
         auto_delete_config = config.get("auto_delete", {})
         
         if not auto_delete_config:
