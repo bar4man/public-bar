@@ -350,75 +350,227 @@ async def before_auto_cleaner():
     """Wait for bot to be ready before starting auto cleaner."""
     await bot.wait_until_ready()
 
-# ---------------- Help Command ----------------
+# ---------------- Enhanced Help System ----------------
 @bot.command(name="help")
-async def help_command(ctx, command_name: str = None):
-    """Enhanced help command with better organization and formatting."""
-    if command_name:
-        await _show_command_help(ctx, command_name)
+async def help_command(ctx: commands.Context, category: str = None):
+    """Main help command with categories. Use ~~help admin or ~~help economy."""
+    if category and category.lower() in ["admin", "economy"]:
+        await _show_category_help(ctx, category.lower())
     else:
         await _show_general_help(ctx)
 
-async def _show_command_help(ctx, command_name: str):
-    """Show help for a specific command."""
-    cmd = bot.get_command(command_name.lower())
-    
-    if not cmd:
-        embed = discord.Embed(
-            title="❌ Command Not Found",
-            description=f"No command named `{command_name}` found.",
-            color=discord.Color.red()
-        )
-        await ctx.send(embed=embed)
-        return
-    
-    embed = discord.Embed(
-        title=f"Command: {cmd.name}",
-        description=cmd.help or "No description available",
-        color=discord.Color.blue()
-    )
-    
-    embed.add_field(name="Usage", value=f"`~~{cmd.name} {cmd.signature}`", inline=False)
-    
-    if cmd.aliases:
-        embed.add_field(name="Aliases", value=", ".join(f"`{alias}`" for alias in cmd.aliases), inline=False)
-    
-    if hasattr(cmd, 'brief') and cmd.brief:
-        embed.add_field(name="Brief", value=cmd.brief, inline=False)
-    
-    await ctx.send(embed=embed)
-
-async def _show_general_help(ctx):
+async def _show_general_help(ctx: commands.Context):
     """Show general help with categorized commands."""
     embed = discord.Embed(
-        title="🤖 Bot Commands Help",
-        description="Use `~~help <command>` for detailed information about a specific command.",
+        title="🤖 Bot Help - Command Categories",
+        description="Use `~~help <category>` for specific command lists.\n\n**Available Categories:**",
         color=discord.Color.blue()
     )
     
-    cogs = {}
-    for command in bot.commands:
-        if command.hidden:
-            continue
-            
-        cog_name = command.cog_name or "General"
-        if cog_name not in cogs:
-            cogs[cog_name] = []
-        cogs[cog_name].append(command)
+    # General Commands
+    general_commands = [
+        "`help` - Shows this message",
+        "`ping` - Check bot latency",
+        "`hello` - Say hello to the bot"
+    ]
     
-    for cog_name, commands_list in sorted(cogs.items()):
-        if not commands_list:
-            continue
-            
-        cmd_names = [f"`{cmd.name}`" for cmd in sorted(commands_list, key=lambda x: x.name)]
-        embed.add_field(
-            name=f"📁 {cog_name}",
-            value=" ".join(cmd_names),
-            inline=False
-        )
+    embed.add_field(
+        name="🔧 General Commands",
+        value="\n".join(general_commands),
+        inline=False
+    )
     
-    embed.set_footer(text=f"Command prefix: ~~ | Total commands: {len(bot.commands)}")
+    # Category Overview
+    embed.add_field(
+        name="📁 Command Categories",
+        value=(
+            "**~~admin** - Moderation and server management\n"
+            "**~~economy** - Money, games, and economy system\n"
+            "**~~help <category>** - Show specific category help"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💡 Quick Start",
+        value=(
+            "• Use `~~economy` to see money commands\n"
+            "• Use `~~admin` for moderation tools\n"
+            "• Most commands have cooldowns for balance"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Use ~~help admin or ~~help economy for detailed commands")
     await ctx.send(embed=embed)
+
+async def _show_category_help(ctx: commands.Context, category: str):
+    """Show help for a specific category."""
+    if category == "admin":
+        await _show_admin_help(ctx)
+    elif category == "economy":
+        await _show_economy_help(ctx)
+
+async def _show_admin_help(ctx: commands.Context):
+    """Show admin/moderation commands."""
+    embed = discord.Embed(
+        title="🛡️ Admin & Moderation Commands",
+        description="Server management and moderation tools.",
+        color=discord.Color.red()
+    )
+    
+    # Moderation Commands
+    moderation_cmds = [
+        "`kick <member> [reason]` - Kick a member",
+        "`ban <member> [reason]` - Ban a member", 
+        "`unban <user_id> [reason]` - Unban a user",
+        "`mute <member> [reason]` - Mute a member",
+        "`unmute <member> [reason]` - Unmute a member",
+        "`clear <amount>` - Delete messages",
+        "`clearuser <member> <amount>` - Delete user messages"
+    ]
+    
+    embed.add_field(
+        name="🔨 Moderation",
+        value="\n".join(moderation_cmds),
+        inline=False
+    )
+    
+    # Utility Commands
+    utility_cmds = [
+        "`serverinfo` - Show server information",
+        "`userinfo [member]` - Show user information",
+        "`setlogchannel [channel]` - Set mod log channel"
+    ]
+    
+    embed.add_field(
+        name="📊 Utility",
+        value="\n".join(utility_cmds),
+        inline=False
+    )
+    
+    # Bot Management
+    bot_cmds = [
+        "`reloadcogs` - Reload all cogs",
+        "`setstatus <status>` - Change bot status"
+    ]
+    
+    embed.add_field(
+        name="⚙️ Bot Management",
+        value="\n".join(bot_cmds),
+        inline=False
+    )
+    
+    # Economy Admin Commands
+    economy_admin = [
+        "`economygive <member> <amount>` - Give money to user",
+        "`economytake <member> <amount>` - Take money from user", 
+        "`economyset <member> <wallet> <bank>` - Set user balance",
+        "`economyreset <member>` - Reset user economy data",
+        "`economystats` - View economy statistics"
+    ]
+    
+    embed.add_field(
+        name="💰 Economy Admin",
+        value="\n".join(economy_admin),
+        inline=False
+    )
+    
+    embed.set_footer(text="Admin commands require bot-admin role or Administrator permissions")
+    await ctx.send(embed=embed)
+
+async def _show_economy_help(ctx: commands.Context):
+    """Show economy and game commands."""
+    embed = discord.Embed(
+        title="💰 Economy & Games Commands", 
+        description="Money management, games, and earning opportunities.",
+        color=discord.Color.gold()
+    )
+    
+    # Balance Management
+    balance_cmds = [
+        "`balance [member]` - Check balance",
+        "`wallet [member]` - Check wallet only", 
+        "`bank [member]` - Check bank only",
+        "`networth [member]` - Check total net worth",
+        "`deposit <amount|all|max>` - Deposit to bank",
+        "`withdraw <amount|all>` - Withdraw from bank",
+        "`pay <member> <amount>` - Pay another user"
+    ]
+    
+    embed.add_field(
+        name="💵 Balance Management",
+        value="\n".join(balance_cmds),
+        inline=False
+    )
+    
+    # Earning Commands
+    earning_cmds = [
+        "`daily` - Claim daily reward (24h cooldown)",
+        "`work` - Work for money (1h cooldown)", 
+        "`crime` - High-risk crime (2h cooldown)"
+    ]
+    
+    embed.add_field(
+        name="💼 Earning Money",
+        value="\n".join(earning_cmds),
+        inline=False
+    )
+    
+    # Games & Gambling
+    game_cmds = [
+        "`flip <heads/tails> <bet>` - Coin flip game",
+        "`dice <bet>` - Dice rolling game", 
+        "`rps <rock/paper/scissors> <bet>` - Rock Paper Scissors",
+        "`guess <bet>` - Number guessing game",
+        "`blackjack <bet>` - Blackjack card game"
+    ]
+    
+    embed.add_field(
+        name="🎮 Games & Gambling", 
+        value="\n".join(game_cmds),
+        inline=False
+    )
+    
+    # Shop & Items
+    shop_cmds = [
+        "`shop` - Browse the shop",
+        "`buy <item_id>` - Purchase an item", 
+        "`inventory [member]` - View inventory",
+        "`use <item_name>` - Use a consumable item"
+    ]
+    
+    embed.add_field(
+        name="🛍️ Shop & Items",
+        value="\n".join(shop_cmds),
+        inline=False
+    )
+    
+    # Social & Leaderboards
+    social_cmds = [
+        "`leaderboard` - Wealth leaderboard", 
+        "`pay <member> <amount>` - Pay another user"
+    ]
+    
+    embed.add_field(
+        name="👥 Social & Leaderboards",
+        value="\n".join(social_cmds),
+        inline=False
+    )
+    
+    embed.set_footer(text="Most commands have cooldowns - check individual command help")
+    await ctx.send(embed=embed)
+
+# ---------------- New Category Help Commands ----------------
+@bot.command(name="admin")
+async def admin_help(ctx: commands.Context):
+    """Direct admin help command."""
+    await _show_admin_help(ctx)
+
+@bot.command(name="economy")
+async def economy_help(ctx: commands.Context):
+    """Direct economy help command."""
+    await _show_economy_help(ctx)
 
 # ---------------- Cog Loader ----------------
 async def load_cogs():
@@ -525,6 +677,11 @@ async def reload(ctx):
     await reload_cogs()
     await msg.edit(content="✅ All cogs reloaded successfully!")
 
+@bot.command(name="hello")
+async def hello(ctx):
+    """Say hello to the bot"""
+    await ctx.send(f'Hello {ctx.author.mention}! 👋')
+
 # ---------------- Keep Alive ----------------
 if KEEP_ALIVE:
     try:
@@ -548,4 +705,3 @@ if __name__ == "__main__":
         logging.critical("❌ Invalid Discord token")
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
-
