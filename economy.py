@@ -1339,6 +1339,141 @@ class Economy(commands.Cog):
             embed = await self.create_economy_embed("⚠️ Error", discord.Color.red())
             embed.description = "An error occurred while loading the leaderboard."
             await ctx.send(embed=embed)
+    # ---------------- Simple Wallet/Bank View Commands ----------------
+    @commands.command(name="wallet", aliases=["wal"])
+    async def wallet(self, ctx: commands.Context, member: discord.Member = None):
+        """View your wallet balance or another user's wallet."""
+        member = member or ctx.author
+        
+        try:
+            user_data = await self.get_balance(member.id)
+            wallet = user_data["wallet"]
+            
+            embed = await self.create_economy_embed(f"💵 {member.display_name}'s Wallet")
+            embed.set_thumbnail(url=member.display_avatar.url)
+            
+            embed.add_field(
+                name="💰 Wallet Balance", 
+                value=f"**{self.format_money(wallet)}**", 
+                inline=False
+            )
+            
+            if member == ctx.author:
+                embed.add_field(
+                    name="💡 Quick Actions", 
+                    value="• Use `~~deposit <amount>` to move money to bank\n• Use `~~withdraw <amount>` to get money from bank", 
+                    inline=False
+                )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Wallet check failed: {e}")
+            embed = await self.create_economy_embed("⚠️ Error", discord.Color.red())
+            embed.description = "An error occurred while checking the wallet balance."
+            await ctx.send(embed=embed)
+
+    @commands.command(name="bank")
+    async def bank(self, ctx: commands.Context, member: discord.Member = None):
+        """View your bank balance or another user's bank."""
+        member = member or ctx.author
+        
+        try:
+            user_data = await self.get_balance(member.id)
+            bank = user_data["bank"]
+            bank_limit = user_data["bank_limit"]
+            bank_usage = (bank / bank_limit) * 100 if bank_limit > 0 else 0
+            
+            embed = await self.create_economy_embed(f"🏦 {member.display_name}'s Bank")
+            embed.set_thumbnail(url=member.display_avatar.url)
+            
+            # Bank usage bar
+            bars = 10
+            filled_bars = min(bars, int(bank_usage / 10))
+            bar = "█" * filled_bars + "░" * (bars - filled_bars)
+            
+            embed.add_field(
+                name="🏦 Bank Balance", 
+                value=f"**{self.format_money(bank)} / {self.format_money(bank_limit)}**", 
+                inline=False
+            )
+            
+            embed.add_field(
+                name="📊 Bank Usage", 
+                value=f"`{bar}` {bank_usage:.1f}%", 
+                inline=False
+            )
+            
+            if member == ctx.author:
+                embed.add_field(
+                    name="💡 Quick Actions", 
+                    value="• Use `~~deposit <amount|all>` to add money\n• Use `~~withdraw <amount|all>` to take money\n• Use `~~shop` to buy bank upgrades", 
+                    inline=False
+                )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Bank check failed: {e}")
+            embed = await self.create_economy_embed("⚠️ Error", discord.Color.red())
+            embed.description = "An error occurred while checking the bank balance."
+            await ctx.send(embed=embed)
+
+    @commands.command(name="networth", aliases=["nw", "worth"])
+    async def networth(self, ctx: commands.Context, member: discord.Member = None):
+        """View your total net worth (wallet + bank)."""
+        member = member or ctx.author
+        
+        try:
+            user_data = await self.get_balance(member.id)
+            wallet = user_data["wallet"]
+            bank = user_data["bank"]
+            total = wallet + bank
+            
+            embed = await self.create_economy_embed(f"💎 {member.display_name}'s Net Worth")
+            embed.set_thumbnail(url=member.display_avatar.url)
+            
+            embed.add_field(name="💵 Wallet", value=self.format_money(wallet), inline=True)
+            embed.add_field(name="🏦 Bank", value=self.format_money(bank), inline=True)
+            embed.add_field(name="💎 Total Net Worth", value=f"**{self.format_money(total)}**", inline=True)
+            
+            # Wealth tier based on total
+            if total >= 1000000:
+                tier = "💰 Billionaire"
+                color = discord.Color.gold()
+            elif total >= 100000:
+                tier = "💎 Millionaire" 
+                color = discord.Color.purple()
+            elif total >= 50000:
+                tier = "🏦 Rich"
+                color = discord.Color.blue()
+            elif total >= 10000:
+                tier = "💵 Well-off"
+                color = discord.Color.green()
+            elif total >= 1000:
+                tier = "🪙 Stable"
+                color = discord.Color.green()
+            else:
+                tier = "🌱 Starting"
+                color = discord.Color.light_grey()
+            
+            embed.add_field(name="🏆 Wealth Tier", value=tier, inline=False)
+            embed.color = color
+            
+            if member == ctx.author:
+                embed.add_field(
+                    name="📈 Growth Tips", 
+                    value="• Use `~~work` every hour\n• Claim `~~daily` rewards\n• Play `~~shop` games\n• Buy upgrades from `~~shop`", 
+                    inline=False
+                )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Networth check failed: {e}")
+            embed = await self.create_economy_embed("⚠️ Error", discord.Color.red())
+            embed.description = "An error occurred while checking net worth."
+            await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Economy(bot))
