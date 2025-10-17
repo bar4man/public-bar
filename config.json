@@ -1,10 +1,9 @@
 {
-  "auto_delete": {
-    }
-  },
-  "autorole": "costumer",       
-  "grape_gifs": [],           
-  "member_numbers": {}        
-
-
-
+  "auto_delete": {},
+  "autorole": null,
+  "grape_gifs": [],
+  "member_numbers": {},
+  "prefix": "~~",
+  "allowed_channels": [],
+  "mod_log_channel": null
+}
