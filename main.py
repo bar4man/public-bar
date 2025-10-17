@@ -527,7 +527,15 @@ async def reload(ctx):
 
 # ---------------- Keep Alive ----------------
 if KEEP_ALIVE:
-    webserver.keep_alive()
+    try:
+        import webserver
+        success = webserver.keep_alive()
+        if success:
+            logging.info("✅ Keep-alive web server initialized")
+        else:
+            logging.warning("❌ Keep-alive web server failed to start")
+    except Exception as e:
+        logging.error(f"❌ Keep-alive setup failed: {e}")
 
 # ---------------- Run Bot ----------------
 if __name__ == "__main__":
@@ -540,3 +548,4 @@ if __name__ == "__main__":
         logging.critical("❌ Invalid Discord token")
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
+
