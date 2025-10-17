@@ -185,6 +185,14 @@ class Bot(commands.Bot):
 # Create bot instance AFTER everything is defined
 bot = Bot()
 
+# Register bot with web server for status monitoring
+try:
+    import webserver
+    webserver.set_bot(bot)
+    logging.info("✅ Bot registered with web server for status monitoring")
+except Exception as e:
+    logging.warning(f"❌ Could not register bot with web server: {e}")
+
 # ---------------- Error Handling ----------------
 @bot.event
 async def on_command_error(ctx, error):
