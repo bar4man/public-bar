@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 import aiofiles
+from economy import db  # Added missing import
 
 class Admin(commands.Cog):
     """Enhanced administrative commands for bot management and moderation."""
