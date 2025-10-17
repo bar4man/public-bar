@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 import logging
 import os
 import threading
@@ -86,13 +86,15 @@ def home():
             "/detailed": "Detailed status information",
             "/stats": "Bot statistics",
             "/system": "System information",
-            "/ping": "Simple ping response"
+            "/ping": "Simple ping response",
+            "/up": "Ultra-lightweight health check"
         }
     })
 
 @app.route('/health')
 def health():
     """Health check endpoint for monitoring services."""
+    start_time = time.time()
     health_stats['total_checks'] += 1
     health_stats['last_check'] = datetime.utcnow().isoformat()
     
@@ -101,13 +103,14 @@ def health():
         bot_ready = bot_instance and bot_instance.is_ready()
         bot_status = "connected" if bot_ready else "disconnected"
         
+        response_time = round((time.time() - start_time) * 1000, 2)
         health_stats['last_success'] = datetime.utcnow().isoformat()
         
         return jsonify({
             "status": "healthy",
             "bot_status": bot_status,
-            "timestamp": datetime.utcnow().isoformat(),
-            "response_time": "fast"
+            "response_time_ms": response_time,
+            "timestamp": datetime.utcnow().isoformat()
         })
         
     except Exception as e:
@@ -117,6 +120,11 @@ def health():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }), 500
+
+@app.route('/up')
+def up():
+    """Ultra-lightweight endpoint for basic uptime checks."""
+    return "OK"
 
 @app.route('/detailed')
 def detailed_status():
@@ -273,13 +281,21 @@ def monitoring_status():
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
+# Add CORS headers for better compatibility
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
 # Error handlers
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({
         "error": "Endpoint not found",
         "available_endpoints": [
-            "/", "/health", "/detailed", "/stats", 
+            "/", "/health", "/up", "/detailed", "/stats", 
             "/system", "/ping", "/version", "/monitoring"
         ],
         "timestamp": datetime.utcnow().isoformat()
@@ -300,14 +316,23 @@ def internal_error(e):
     }), 500
 
 def run():
-    """Run the web server."""
+    """Run the web server with production settings for Render."""
     try:
+        # Use Render's PORT environment variable
         port = int(os.getenv('PORT', 8080))
-        host = os.getenv('HOST', '0.0.0.0')
+        host = '0.0.0.0'
         
         logger.info(f"Starting web server on {host}:{port}")
-        # Disable Flask development mode for production
-        app.run(host=host, port=port, debug=False, threaded=True)
+        
+        # Try using a production WSGI server first
+        try:
+            from waitress import serve
+            logger.info("Using Waitress production server")
+            serve(app, host=host, port=port, threads=4)
+        except ImportError:
+            # Fallback to Flask development server
+            logger.warning("Waitress not available, using Flask development server")
+            app.run(host=host, port=port, debug=False, threaded=True)
         
     except Exception as e:
         logger.error(f"Web server error: {e}")
@@ -315,6 +340,9 @@ def run():
 def keep_alive():
     """Start the keep-alive web server in a separate thread."""
     try:
+        # Small delay to ensure bot is initialized first
+        time.sleep(2)
+        
         # Set more descriptive thread name
         t = threading.Thread(target=run, name="WebServer-Thread", daemon=True)
         t.start()
