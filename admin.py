@@ -565,7 +565,7 @@ class Admin(commands.Cog):
         await ctx.send(embed=embed)
     
     # -------------------- Bot Management --------------------
-    @commands.command(name="reloadcogs", aliases=["cogreload"])  # FIXED: Changed from "reload" to "cogreload"
+    @commands.command(name="reloadcogs", aliases=["cogreload"])
     async def reload_cogs(self, ctx: commands.Context):
         """Reload all bot cogs."""
         try:
@@ -601,7 +601,7 @@ class Admin(commands.Cog):
             )
             await ctx.send(embed=embed)
     
-    @commands.command(name="setstatus", aliases=["status"])  # FIXED: Changed from "botstatus" to "setstatus"
+    @commands.command(name="setstatus", aliases=["status"])
     async def set_status(self, ctx: commands.Context, *, status: str = None):
         """Change the bot's status."""
         if status:
@@ -631,93 +631,51 @@ class Admin(commands.Cog):
     @commands.command(name="economygive", aliases=["egive", "agive"])
     async def economy_give(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin: Give money to a user's wallet."""
-        if amount <= 0 or member.bot:
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
             embed = discord.Embed(
-                title="❌ Invalid Target or Amount",
-                description="Amount must be positive and target cannot be a bot.",
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
-
-        try:
-            # Get economy cog
-            economy_cog = self.bot.get_cog("Economy")
-            
-            if not economy_cog:
-                embed = discord.Embed(
-                    title="❌ Economy System Unavailable",
-                    description="Economy cog is not loaded.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
-            
-            # Use economy cog's method to update balance
-            await economy_cog.update_balance(member.id, wallet_change=amount)
-            
-            embed = discord.Embed(
-                title="✅ Money Given",
-                description=f"Gave {amount:,}£ to {member.mention}",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-            
-            # Log the action
-            await self.log_mod_action("economy_give", ctx.author, member, f"Given {amount:,}£")
-            
-        except Exception as e:
-            logging.error(f"Economy give failed: {e}")
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to give money.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+        
+        await economy_cog.update_balance(member.id, wallet_change=amount)
+        
+        embed = discord.Embed(
+            title="✅ Money Given",
+            description=f"Gave {amount:,}£ to {member.mention}",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+        
+        # Log the action
+        await self.log_mod_action("economy_give", ctx.author, member, f"Given {amount:,}£")
 
     @commands.command(name="economytake", aliases=["etake", "atake"])
     async def economy_take(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin: Take money from a user's wallet."""
-        if amount <= 0 or member.bot:
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
             embed = discord.Embed(
-                title="❌ Invalid Target or Amount",
-                description="Amount must be positive and target cannot be a bot.",
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
-
-        try:
-            economy_cog = self.bot.get_cog("Economy")
-            if not economy_cog:
-                embed = discord.Embed(
-                    title="❌ Economy System Unavailable",
-                    description="Economy cog is not loaded.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
-            
-            # Get current balance first
-            user_data = await economy_cog.get_balance(member.id)
-            current_wallet = user_data["wallet"]
-            taken = min(amount, current_wallet)
-            
-            await economy_cog.update_balance(member.id, wallet_change=-taken)
-            
-            embed = discord.Embed(
-                title="✅ Money Taken",
-                description=f"Took {taken:,}£ from {member.mention}",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-            
-            await self.log_mod_action("economy_take", ctx.author, member, f"Taken {taken:,}£")
-            
-        except Exception as e:
-            logging.error(f"Economy take failed: {e}")
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to take money.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=embed)
+        
+        user_data = economy_cog.get_user(member.id)
+        taken = min(amount, user_data["wallet"])
+        await economy_cog.update_balance(member.id, wallet_change=-taken)
+        
+        embed = discord.Embed(
+            title="✅ Money Taken",
+            description=f"Took {taken:,}£ from {member.mention}",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+        
+        await self.log_mod_action("economy_take", ctx.author, member, f"Taken {taken:,}£")
 
     @commands.command(name="economyset", aliases=["eset", "aset"])
     async def economy_set(self, ctx: commands.Context, member: discord.Member, wallet: int = None, bank: int = None):
@@ -738,158 +696,133 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        try:
-            economy_cog = self.bot.get_cog("Economy")
-            if not economy_cog:
-                embed = discord.Embed(
-                    title="❌ Economy System Unavailable",
-                    description="Economy cog is not loaded.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
-            
-            # Get current balance to calculate differences
-            user_data = await economy_cog.get_balance(member.id)
-            current_wallet = user_data["wallet"]
-            current_bank = user_data["bank"]
-            
-            wallet_change = 0
-            bank_change = 0
-            
-            if wallet is not None:
-                wallet_change = wallet - current_wallet
-            
-            if bank is not None:
-                bank_change = bank - current_bank
-            
-            await economy_cog.update_balance(member.id, wallet_change=wallet_change, bank_change=bank_change)
-            
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
             embed = discord.Embed(
-                title="✅ Balance Set",
-                description=f"Updated {member.mention}'s balance",
-                color=discord.Color.green()
-            )
-            
-            if wallet is not None:
-                embed.add_field(name="💵 Wallet", value=f"{wallet:,}£", inline=True)
-            if bank is not None:
-                embed.add_field(name="🏦 Bank", value=f"{bank:,}£", inline=True)
-            
-            await ctx.send(embed=embed)
-            
-            action_desc = f"Set wallet: {wallet}, bank: {bank}" if wallet and bank else f"Set wallet: {wallet}" if wallet else f"Set bank: {bank}"
-            await self.log_mod_action("economy_set", ctx.author, member, action_desc)
-            
-        except Exception as e:
-            logging.error(f"Economy set failed: {e}")
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to set balance.",
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            return await ctx.send(embed=embed)
+        
+        user_data = economy_cog.get_user(member.id)
+        
+        wallet_change = 0
+        bank_change = 0
+        
+        if wallet is not None:
+            wallet_change = wallet - user_data["wallet"]
+        
+        if bank is not None:
+            bank_change = bank - user_data["bank"]
+        
+        await economy_cog.update_balance(member.id, wallet_change=wallet_change, bank_change=bank_change)
+        
+        embed = discord.Embed(
+            title="✅ Balance Set",
+            description=f"Updated {member.mention}'s balance",
+            color=discord.Color.green()
+        )
+        
+        if wallet is not None:
+            embed.add_field(name="💵 Wallet", value=f"{wallet:,}£", inline=True)
+        if bank is not None:
+            embed.add_field(name="🏦 Bank", value=f"{bank:,}£", inline=True)
+        
+        await ctx.send(embed=embed)
+        
+        action_desc = f"Set wallet: {wallet}, bank: {bank}" if wallet and bank else f"Set wallet: {wallet}" if wallet else f"Set bank: {bank}"
+        await self.log_mod_action("economy_set", ctx.author, member, action_desc)
 
     @commands.command(name="economyreset", aliases=["ereset", "areset"])
     async def economy_reset(self, ctx: commands.Context, member: discord.Member):
         """Admin: Reset a user's entire economy data."""
-        try:
-            economy_cog = self.bot.get_cog("Economy")
-            if not economy_cog:
-                embed = discord.Embed(
-                    title="❌ Economy System Unavailable",
-                    description="Economy cog is not loaded.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            embed = discord.Embed(
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        # Reset user data
+        user_id_str = str(member.id)
+        if user_id_str in economy_cog.data['users']:
+            # Reset to default values but keep user entry
+            economy_cog.data['users'][user_id_str] = {
+                "wallet": 100,
+                "bank": 0,
+                "bank_limit": 5000,
+                "networth": 100,
+                "daily_streak": 0,
+                "last_daily": None,
+                "total_earned": 0,
+                "created_at": datetime.now().isoformat(),
+                "last_active": datetime.now().isoformat()
+            }
             
-            # Load data and remove user
-            data = await economy_cog.load_data()
-            uid = str(member.id)
+            # Remove from inventory
+            if user_id_str in economy_cog.data['inventory']:
+                del economy_cog.data['inventory'][user_id_str]
             
-            if uid not in data:
-                embed = discord.Embed(
-                    title="ℹ️ No Data Found",
-                    description=f"{member.mention} has no economy data to reset.",
-                    color=discord.Color.blue()
-                )
-                return await ctx.send(embed=embed)
-            
-            del data[uid]
-            await economy_cog.save_data(data)
-            
-            # Also reset inventory
-            inventory = await economy_cog.load_inventory()
-            if uid in inventory:
-                del inventory[uid]
-                await economy_cog.save_inventory(inventory)
+            # Save changes
+            await economy_cog.save_data()
             
             embed = discord.Embed(
                 title="✅ Economy Data Reset",
                 description=f"Reset all economy data for {member.mention}",
                 color=discord.Color.green()
             )
-            await ctx.send(embed=embed)
-            
-            await self.log_mod_action("economy_reset", ctx.author, member, "Reset all economy data")
-            
-        except Exception as e:
-            logging.error(f"Economy reset failed: {e}")
+        else:
             embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to reset economy data.",
-                color=discord.Color.red()
+                title="ℹ️ No Data Found",
+                description=f"{member.mention} has no economy data to reset.",
+                color=discord.Color.blue()
             )
-            await ctx.send(embed=embed)
+        
+        await ctx.send(embed=embed)
+        await self.log_mod_action("economy_reset", ctx.author, member, "Reset all economy data")
 
     @commands.command(name="economystats", aliases=["estats", "astats"])
     async def economy_stats(self, ctx: commands.Context):
         """Admin: View economy system statistics."""
-        try:
-            economy_cog = self.bot.get_cog("Economy")
-            if not economy_cog:
-                embed = discord.Embed(
-                    title="❌ Economy System Unavailable",
-                    description="Economy cog is not loaded.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
-            
-            data = await economy_cog.load_data()
-            inventory = await economy_cog.load_inventory()
-            shop_data = await economy_cog.load_shop()
-            
-            total_users = len(data)
-            total_money = sum(user.get("wallet", 0) + user.get("bank", 0) for user in data.values())
-            richest_user_id = max(data.keys(), key=lambda uid: data[uid].get("wallet", 0) + data[uid].get("bank", 0)) if data else None
-            richest_user = self.bot.get_user(int(richest_user_id)) if richest_user_id else None
-            richest_amount = data[richest_user_id]["wallet"] + data[richest_user_id]["bank"] if richest_user_id else 0
-            
-            total_inventory_items = sum(len(items) for items in inventory.values())
-            shop_items = len(shop_data.get("items", []))
-            
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
             embed = discord.Embed(
-                title="📊 Economy System Statistics",
-                color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            embed.add_field(name="👥 Total Users", value=total_users, inline=True)
-            embed.add_field(name="💰 Total Money in Circulation", value=f"{total_money:,}£", inline=True)
-            embed.add_field(name="🏆 Richest User", value=f"{richest_user.display_name if richest_user else 'N/A'}\n{richest_amount:,}£", inline=True)
-            embed.add_field(name="🎒 Total Inventory Items", value=total_inventory_items, inline=True)
-            embed.add_field(name="🛍️ Shop Items", value=shop_items, inline=True)
-            embed.add_field(name="📈 Avg Wealth per User", value=f"{total_money//total_users if total_users else 0:,}£", inline=True)
-            
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logging.error(f"Economy stats failed: {e}")
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to load economy statistics.",
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            return await ctx.send(embed=embed)
+        
+        stats = db.get_stats(economy_cog.data)
+        
+        embed = discord.Embed(
+            title="📊 Economy System Statistics",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        embed.add_field(name="👥 Total Users", value=stats['total_users'], inline=True)
+        embed.add_field(name="💰 Total Money in Circulation", value=f"{stats['total_money']:,}£", inline=True)
+        embed.add_field(name="📅 System Created", value=datetime.fromisoformat(stats['created_at']).strftime("%Y-%m-%d"), inline=True)
+        embed.add_field(name="💾 Last Save", value=datetime.fromisoformat(stats['last_save']).strftime("%H:%M:%S") if stats['last_save'] else "Never", inline=True)
+        
+        # Calculate average wealth
+        avg_wealth = stats['total_money'] // stats['total_users'] if stats['total_users'] > 0 else 0
+        embed.add_field(name="📈 Average Wealth", value=f"{avg_wealth:,}£", inline=True)
+        
+        # Find richest user
+        users_data = economy_cog.data['users']
+        if users_data:
+            richest_user_id = max(users_data.keys(), 
+                                key=lambda uid: users_data[uid].get("wallet", 0) + users_data[uid].get("bank", 0))
+            richest_user = self.bot.get_user(int(richest_user_id))
+            richest_amount = users_data[richest_user_id]["wallet"] + users_data[richest_user_id]["bank"]
+            embed.add_field(name="🏆 Richest User", value=f"{richest_user.display_name if richest_user else 'Unknown'}\n{richest_amount:,}£", inline=True)
+        
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
