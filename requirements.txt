@@ -3,3 +3,4 @@ Flask
 python-dotenv
 aiofiles
 psutil
+waitress
