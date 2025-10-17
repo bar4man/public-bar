@@ -693,12 +693,21 @@ async def hello(ctx):
 # ---------------- Keep Alive ----------------
 if KEEP_ALIVE:
     try:
-        import webserver
-        success = webserver.keep_alive()
-        if success:
-            logging.info("✅ Keep-alive web server initialized")
-        else:
-            logging.warning("❌ Keep-alive web server failed to start")
+        # Small delay to let bot initialize first
+        import asyncio
+        
+        async def start_webserver():
+            await asyncio.sleep(3)  # Wait for bot to initialize
+            import webserver
+            success = webserver.keep_alive()
+            if success:
+                logging.info("✅ Keep-alive web server initialized")
+            else:
+                logging.warning("❌ Keep-alive web server failed to start")
+        
+        # Start the webserver after a delay
+        asyncio.create_task(start_webserver())
+        
     except Exception as e:
         logging.error(f"❌ Keep-alive setup failed: {e}")
 
@@ -713,3 +722,4 @@ if __name__ == "__main__":
         logging.critical("❌ Invalid Discord token")
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
+
