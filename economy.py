@@ -969,34 +969,7 @@ class Economy(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="economystats", aliases=["estats"])
-    @commands.has_permissions(administrator=True)
-    async def economy_stats(self, ctx: commands.Context):
-        """View economy system statistics (Admin only)."""
-        stats = db.get_stats(self.data)
-        
-        embed = await self.create_economy_embed("📊 Economy System Statistics", discord.Color.blue())
-        
-        embed.add_field(name="👥 Total Users", value=stats['total_users'], inline=True)
-        embed.add_field(name="💰 Total Money in Circulation", value=self.format_money(stats['total_money']), inline=True)
-        embed.add_field(name="📅 System Created", value=datetime.fromisoformat(stats['created_at']).strftime("%Y-%m-%d"), inline=True)
-        embed.add_field(name="💾 Last Save", value=datetime.fromisoformat(stats['last_save']).strftime("%H:%M:%S") if stats['last_save'] else "Never", inline=True)
-        
-        # Calculate average wealth
-        avg_wealth = stats['total_money'] // stats['total_users'] if stats['total_users'] > 0 else 0
-        embed.add_field(name="📈 Average Wealth", value=self.format_money(avg_wealth), inline=True)
-        
-        # Backup status
-        backup_files = []
-        for backup_file in db.backup_files:
-            if os.path.exists(backup_file):
-                backup_files.append("✅")
-            else:
-                backup_files.append("❌")
-        
-        embed.add_field(name="💾 Backup Status", value=" ".join(backup_files), inline=True)
-        
-        await ctx.send(embed=embed)
+    # NOTE: Removed the duplicate economystats command - it's now only in admin.py
     
     @commands.command(name="saveeconomy", aliases=["forcedsave"])
     @commands.has_permissions(administrator=True)
