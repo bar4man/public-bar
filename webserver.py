@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 bot_instance = None
 startup_time = datetime.utcnow()
+web_server_started = False
 
 def set_bot(bot):
     global bot_instance
@@ -30,7 +31,8 @@ def home():
         "status": "online", 
         "service": "discord-bot",
         "timestamp": datetime.utcnow().isoformat(),
-        "uptime": get_uptime()
+        "uptime": get_uptime(),
+        "web_server": "running"
     })
 
 @app.route('/health')
@@ -40,6 +42,7 @@ def health():
         return jsonify({
             "status": "healthy" if bot_ready else "starting",
             "bot_ready": bot_ready,
+            "web_server": "running",
             "timestamp": datetime.utcnow().isoformat()
         })
     except Exception as e:
@@ -53,37 +56,71 @@ def up():
 def ping():
     return "pong"
 
-# Render-specific: Must bind to the port they provide
+@app.route('/status')
+def status():
+    return jsonify({
+        "bot_ready": bot_instance and bot_instance.is_ready(),
+        "web_server": "running",
+        "uptime": get_uptime(),
+        "timestamp": datetime.utcnow().isoformat()
+    })
+
 def run():
+    """Run the web server with production settings for Render."""
+    global web_server_started
     try:
-        port = int(os.environ.get('PORT', 8080))
-        logger.info(f"Starting web server on port {port}")
+        # Use Render's PORT environment variable
+        port = int(os.getenv('PORT', 8080))
+        host = '0.0.0.0'
         
-        # Use production WSGI server
+        logger.info(f"🚀 Starting web server on {host}:{port}")
+        
+        # Try using a production WSGI server first
         try:
             from waitress import serve
-            logger.info("Using Waitress production server")
-            serve(app, host='0.0.0.0', port=port, threads=4)
+            logger.info("✅ Using Waitress production server on port %s", port)
+            web_server_started = True
+            serve(app, host=host, port=port, threads=4, _quiet=True)
         except ImportError:
-            # Fallback
-            logger.info("Using Flask development server")
-            app.run(host='0.0.0.0', port=port, debug=False)
-            
+            # Fallback to Flask development server
+            logger.warning("⚠️ Waitress not available, using Flask development server")
+            web_server_started = True
+            app.run(host=host, port=port, debug=False, use_reloader=False)
+        
     except Exception as e:
-        logger.error(f"Web server failed: {e}")
+        logger.error(f"❌ Web server error: {e}")
+        web_server_started = False
 
 def keep_alive():
+    """Start the keep-alive web server in a separate thread."""
     try:
-        # Start in a separate thread
-        t = threading.Thread(target=run, daemon=True)
+        # Start web server immediately in a separate thread
+        t = threading.Thread(target=run, name="WebServer", daemon=True)
         t.start()
-        logger.info("Web server thread started")
-        return True
+        
+        # Give it a moment to start
+        time.sleep(2)
+        
+        if web_server_started:
+            logger.info("✅ Keep-alive web server started successfully")
+            return True
+        else:
+            logger.warning("❌ Web server thread started but may not be running")
+            return True  # Still return True since thread started
+            
     except Exception as e:
-        logger.error(f"Failed to start web server: {e}")
+        logger.error(f"❌ Failed to start keep-alive: {e}")
         return False
 
+# For Render health checks - simple immediate response
+@app.route('/render-health')
+def render_health():
+    """Ultra-fast health check for Render's internal monitoring"""
+    return "READY"
+
 if __name__ == "__main__":
+    print("Starting web server for testing...")
     keep_alive()
+    # Keep the main thread alive
     while True:
         time.sleep(1)
