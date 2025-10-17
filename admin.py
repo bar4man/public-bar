@@ -601,31 +601,31 @@ class Admin(commands.Cog):
             )
             await ctx.send(embed=embed)
     
-    @commands.command(name="botstatus", aliases=["status"])
-    async def bot_status(self, ctx: commands.Context, *, status: str = None):
-        """Change the bot's status."""
-        if status:
-            await self.bot.change_presence(activity=discord.Game(name=status))
-            embed = discord.Embed(
-                title="✅ Status Updated",
-                description=f"Bot status changed to: **{status}**",
-                color=discord.Color.green()
-            )
-        else:
-            # Show current status
-            current_activity = self.bot.activity
-            status_text = current_activity.name if current_activity else "No activity set"
-            
-            embed = discord.Embed(
-                title="🤖 Bot Status",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Current Activity", value=status_text, inline=False)
-            embed.add_field(name="Latency", value=f"{round(self.bot.latency * 1000)}ms", inline=False)
-            embed.add_field(name="Guilds", value=len(self.bot.guilds), inline=False)
-            embed.add_field(name="Users", value=sum(g.member_count for g in self.bot.guilds), inline=False)
+@commands.command(name="setstatus", aliases=["status"])
+async def set_status(self, ctx: commands.Context, *, status: str = None):
+    """Change the bot's status."""
+    if status:
+        await self.bot.change_presence(activity=discord.Game(name=status))
+        embed = discord.Embed(
+            title="✅ Status Updated",
+            description=f"Bot status changed to: **{status}**",
+            color=discord.Color.green()
+        )
+    else:
+        # Show current status
+        current_activity = self.bot.activity
+        status_text = current_activity.name if current_activity else "No activity set"
         
-        await ctx.send(embed=embed)
+        embed = discord.Embed(
+            title="🤖 Bot Status",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Current Activity", value=status_text, inline=False)
+        embed.add_field(name="Latency", value=f"{round(self.bot.latency * 1000)}ms", inline=False)
+        embed.add_field(name="Guilds", value=len(self.bot.guilds), inline=False)
+        embed.add_field(name="Users", value=sum(g.member_count for g in self.bot.guilds), inline=False)
+    
+    await ctx.send(embed=embed)
 
     # -------------------- Economy Admin Commands --------------------
     @commands.command(name="economygive", aliases=["egive", "agive"])
