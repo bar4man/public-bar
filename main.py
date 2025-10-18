@@ -8,9 +8,9 @@ import json
 from datetime import datetime, timezone, timedelta
 import webserver
 import aiofiles
-import sys  # ADD THIS IMPORT
+import sys
 
-# ADD THIS LINE - Fix module import issue
+# Fix module import issue
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------- Setup ----------------
@@ -652,41 +652,81 @@ async def market_help(ctx: commands.Context):
 # ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
-    cogs = ["admin", "economy", "markets.market_cog"]  # Added markets cog
     loaded_count = 0
     
-    for cog in cogs:
-        try:
-            if cog == "economy":
-                try:
-                    import aiofiles
-                    logging.info("✅ aiofiles dependency available for economy system")
-                except ImportError:
-                    logging.error("❌ aiofiles not installed. Economy features will be limited.")
-                    continue
-            
-            await bot.load_extension(cog)
-            logging.info(f"✅ Loaded cog: {cog}")
-            loaded_count += 1
-            
-        except commands.ExtensionNotFound:
-            logging.error(f"❌ Cog not found: {cog}")
-        except commands.ExtensionFailed as e:
-            logging.error(f"❌ Cog failed to load {cog}: {e}")
-        except Exception as e:
-            logging.error(f"❌ Unexpected error loading cog {cog}: {e}")
+    # Load admin cog
+    try:
+        await bot.load_extension("admin")
+        logging.info("✅ Loaded cog: admin")
+        loaded_count += 1
+    except Exception as e:
+        logging.error(f"❌ Failed to load admin cog: {e}")
     
-    logging.info(f"📊 Cogs loaded: {loaded_count}/{len(cogs)}")
+    # Load economy cog
+    try:
+        if "economy" in bot.extensions:
+            await bot.reload_extension("economy")
+        else:
+            await bot.load_extension("economy")
+        logging.info("✅ Loaded cog: economy")
+        loaded_count += 1
+    except Exception as e:
+        logging.error(f"❌ Failed to load economy cog: {e}")
+    
+    # Load markets cog manually
+    try:
+        # Check if markets folder exists
+        if os.path.exists("markets"):
+            logging.info("📁 Markets folder found, attempting to load...")
+            
+            # Import and add the cog manually
+            from markets.market_cog import MarketCog
+            market_cog = MarketCog(bot)
+            await bot.add_cog(market_cog)
+            logging.info("✅ Loaded cog: markets")
+            loaded_count += 1
+        else:
+            logging.warning("⚠️ Markets folder not found, skipping markets cog")
+            # List current directory to debug
+            current_files = os.listdir(".")
+            logging.info(f"📂 Current directory contents: {current_files}")
+            
+    except ImportError as e:
+        logging.error(f"❌ Import error loading markets cog: {e}")
+        # Debug what's in the markets folder
+        if os.path.exists("markets"):
+            market_files = os.listdir("markets")
+            logging.info(f"📂 Markets folder contents: {market_files}")
+    except Exception as e:
+        logging.error(f"❌ Unexpected error loading markets cog: {e}")
+    
+    logging.info(f"📊 Cogs loaded: {loaded_count}/3")
 
 async def reload_cogs():
     """Reload all cogs."""
-    cogs = ["admin", "economy", "markets.market_cog"]  # Added markets cog
-    for cog in cogs:
+    # Reload admin and economy normally
+    for cog in ["admin", "economy"]:
         try:
             await bot.reload_extension(cog)
             logging.info(f"🔄 Reloaded cog: {cog}")
         except Exception as e:
             logging.error(f"❌ Failed to reload cog {cog}: {e}")
+    
+    # Handle markets cog specially
+    try:
+        if os.path.exists("markets"):
+            # Remove existing markets cog if it exists
+            existing_cog = bot.get_cog("MarketCog")
+            if existing_cog:
+                await bot.remove_cog("MarketCog")
+            
+            # Reload and re-add
+            from markets.market_cog import MarketCog
+            market_cog = MarketCog(bot)
+            await bot.add_cog(market_cog)
+            logging.info("🔄 Reloaded cog: markets")
+    except Exception as e:
+        logging.error(f"❌ Failed to reload markets cog: {e}")
 
 # ---------------- Bot Events ----------------
 @bot.event
@@ -782,5 +822,3 @@ if __name__ == "__main__":
         logging.critical("❌ Invalid Discord token")
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
-
-
