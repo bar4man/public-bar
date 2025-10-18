@@ -1,251 +1,164 @@
 import discord
 from discord.ext import commands
-import json
-import aiofiles
+import motor.motor_asyncio
 import asyncio
-import os
-import glob
 import random
 import logging
-import math
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 
-class JSONDatabase:
-    """JSON-based database with backup system for economy data."""
+class MongoDB:
+    """MongoDB database for economy data with persistence."""
     
     def __init__(self):
-        self.data_dir = "data"
-        self.primary_file = f"{self.data_dir}/economy_data.json"
-        self.backup_files = [
-            f"{self.data_dir}/backup_economy_1.json",
-            f"{self.data_dir}/backup_economy_2.json", 
-            f"{self.data_dir}/backup_economy_3.json"
-        ]
-        self._ensure_directories()
+        self.client = None
+        self.db = None
+        self.connected = False
     
-    def _ensure_directories(self):
-        """Ensure data directory exists."""
-        os.makedirs(self.data_dir, exist_ok=True)
-    
-    async def load_data(self):
-        """Load data from primary file or backups."""
-        # Try primary file first
-        if os.path.exists(self.primary_file):
-            try:
-                async with aiofiles.open(self.primary_file, 'r', encoding='utf-8') as f:
-                    data = json.loads(await f.read())
-                    logging.info("✅ Loaded data from primary file")
-                    return data
-            except Exception as e:
-                logging.warning(f"Primary file corrupted: {e}")
-        
-        # Try backups in order
-        for backup_file in self.backup_files:
-            if os.path.exists(backup_file):
-                try:
-                    async with aiofiles.open(backup_file, 'r', encoding='utf-8') as f:
-                        data = json.loads(await f.read())
-                        logging.info(f"✅ Loaded data from backup: {backup_file}")
-                        # Restore to primary file
-                        await self._save_to_file(self.primary_file, data)
-                        return data
-                except Exception as e:
-                    logging.warning(f"Backup file corrupted {backup_file}: {e}")
-                    continue
-        
-        # Return empty data structure if all fails
-        logging.info("🆕 Creating new empty database")
-        return self._get_empty_data()
-    
-    def _get_empty_data(self):
-        """Return empty data structure."""
-        return {
-            "users": {},
-            "inventory": {},
-            "shop": {
-                "items": [
-                    {
-                        "id": 1,
-                        "name": "💰 Small Bank Upgrade",
-                        "description": "Increase your bank limit by 5,000£",
-                        "price": 2000,
-                        "type": "upgrade",
-                        "effect": {"bank_limit": 5000},
-                        "emoji": "💰",
-                        "stock": -1
-                    },
-                    {
-                        "id": 2,
-                        "name": "🏦 Medium Bank Upgrade", 
-                        "description": "Increase your bank limit by 15,000£",
-                        "price": 5000,
-                        "type": "upgrade",
-                        "effect": {"bank_limit": 15000},
-                        "emoji": "🏦",
-                        "stock": -1
-                    },
-                    {
-                        "id": 3,
-                        "name": "💎 Large Bank Upgrade",
-                        "description": "Increase your bank limit by 50,000£", 
-                        "price": 15000,
-                        "type": "upgrade",
-                        "effect": {"bank_limit": 50000},
-                        "emoji": "💎",
-                        "stock": -1
-                    },
-                    {
-                        "id": 4,
-                        "name": "🎩 Lucky Hat",
-                        "description": "Increases daily reward by 20% for 7 days",
-                        "price": 3000,
-                        "type": "consumable",
-                        "effect": {"daily_bonus": 1.2, "duration": 7},
-                        "emoji": "🎩",
-                        "stock": -1
-                    },
-                    {
-                        "id": 5,
-                        "name": "🍀 Lucky Charm",
-                        "description": "Increases work earnings by 30% for 5 days",
-                        "price": 2500,
-                        "type": "consumable",
-                        "effect": {"work_bonus": 1.3, "duration": 5},
-                        "emoji": "🍀",
-                        "stock": -1
-                    }
-                ]
-            },
-            "cooldowns": {},
-            "metadata": {
-                "created_at": datetime.now().isoformat(),
-                "last_save": None,
-                "total_users": 0,
-                "total_money": 0
-            }
-        }
-    
-    async def save_data(self, data):
-        """Save data with multiple backups."""
-        data['metadata']['last_save'] = datetime.now().isoformat()
-        data['metadata']['total_users'] = len(data['users'])
-        data['metadata']['total_money'] = sum(
-            user_data.get('wallet', 0) + user_data.get('bank', 0) 
-            for user_data in data['users'].values()
-        )
-        
+    async def connect(self):
+        """Connect to MongoDB Atlas."""
         try:
-            # Save to primary file
-            await self._save_to_file(self.primary_file, data)
+            connection_string = os.getenv('MONGODB_URI')
+            if not connection_string:
+                logging.error("❌ MONGODB_URI environment variable not set")
+                return False
             
-            # Rotate backups
-            await self._rotate_backups(data)
+            self.client = motor.motor_asyncio.AsyncIOMotorClient(connection_string)
+            self.db = self.client.economy_bot
             
-            logging.info("💾 Data saved successfully")
+            # Test connection
+            await self.client.admin.command('ping')
+            self.connected = True
+            logging.info("✅ Connected to MongoDB Atlas successfully")
             return True
             
         except Exception as e:
-            logging.error(f"❌ Save failed: {e}")
+            logging.error(f"❌ MongoDB connection failed: {e}")
+            self.connected = False
             return False
     
-    async def _save_to_file(self, filepath, data):
-        """Save data to a specific file."""
-        async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(data, indent=2, ensure_ascii=False))
+    async def initialize_collections(self):
+        """Initialize collections with default data."""
+        if not self.connected:
+            return False
+            
+        try:
+            # Create indexes
+            await self.db.users.create_index("user_id", unique=True)
+            await self.db.inventory.create_index([("user_id", 1), ("item_id", 1)])
+            await self.db.cooldowns.create_index("created_at", expireAfterSeconds=86400)  # 24h TTL
+            
+            # Initialize shop if empty
+            shop_count = await self.db.shop.count_documents({})
+            if shop_count == 0:
+                default_shop = {
+                    "items": [
+                        {
+                            "id": 1,
+                            "name": "💰 Small Bank Upgrade",
+                            "description": "Increase your bank limit by 5,000£",
+                            "price": 2000,
+                            "type": "upgrade",
+                            "effect": {"bank_limit": 5000},
+                            "emoji": "💰",
+                            "stock": -1
+                        },
+                        {
+                            "id": 2,
+                            "name": "🏦 Medium Bank Upgrade", 
+                            "description": "Increase your bank limit by 15,000£",
+                            "price": 5000,
+                            "type": "upgrade",
+                            "effect": {"bank_limit": 15000},
+                            "emoji": "🏦",
+                            "stock": -1
+                        },
+                        {
+                            "id": 3,
+                            "name": "💎 Large Bank Upgrade",
+                            "description": "Increase your bank limit by 50,000£", 
+                            "price": 15000,
+                            "type": "upgrade",
+                            "effect": {"bank_limit": 50000},
+                            "emoji": "💎",
+                            "stock": -1
+                        },
+                        {
+                            "id": 4,
+                            "name": "🎩 Lucky Hat",
+                            "description": "Increases daily reward by 20% for 7 days",
+                            "price": 3000,
+                            "type": "consumable",
+                            "effect": {"daily_bonus": 1.2, "duration": 7},
+                            "emoji": "🎩",
+                            "stock": -1
+                        },
+                        {
+                            "id": 5,
+                            "name": "🍀 Lucky Charm",
+                            "description": "Increases work earnings by 30% for 5 days",
+                            "price": 2500,
+                            "type": "consumable",
+                            "effect": {"work_bonus": 1.3, "duration": 5},
+                            "emoji": "🍀",
+                            "stock": -1
+                        }
+                    ],
+                    "created_at": datetime.now()
+                }
+                await self.db.shop.insert_one(default_shop)
+                logging.info("✅ Default shop items created")
+            
+            logging.info("✅ MongoDB collections initialized")
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ MongoDB initialization failed: {e}")
+            return False
     
-    async def _rotate_backups(self, data):
-        """Rotate backup files (keep last 3)."""
-        # Remove oldest backup if it exists
-        if os.path.exists(self.backup_files[2]):
-            os.remove(self.backup_files[2])
-        
-        # Shift backups
-        for i in range(len(self.backup_files)-2, -1, -1):
-            if os.path.exists(self.backup_files[i]):
-                os.rename(self.backup_files[i], self.backup_files[i+1])
-        
-        # Create new backup
-        await self._save_to_file(self.backup_files[0], data)
-    
-    async def start_auto_save(self, economy_cog):
-        """Start auto-saving every 10 minutes."""
-        while True:
-            await asyncio.sleep(600)  # 10 minutes
-            try:
-                # Get current data from economy cog
-                if hasattr(economy_cog, 'data'):
-                    await self.save_data(economy_cog.data)
-                    logging.info("🔄 Auto-save completed")
-            except Exception as e:
-                logging.error(f"Auto-save failed: {e}")
-    
-    def get_stats(self, data):
-        """Get database statistics."""
-        return {
-            'total_users': len(data['users']),
-            'total_money': sum(
-                user_data.get('wallet', 0) + user_data.get('bank', 0) 
-                for user_data in data['users'].values()
-            ),
-            'last_save': data['metadata'].get('last_save'),
-            'created_at': data['metadata'].get('created_at')
-        }
-
-# Global database instance
-db = JSONDatabase()
-
-class Economy(commands.Cog):
-    """Enhanced economy system with JSON database."""
-    
-    def __init__(self, bot):
-        self.bot = bot
-        self.data = None
-        self.lock = asyncio.Lock()
-        self._ensure_directories()
-        
-    def _ensure_directories(self):
-        """Ensure necessary directories exist."""
-        os.makedirs("data", exist_ok=True)
-    
-    async def cog_load(self):
-        """Load data when cog is loaded."""
-        await self.load_data()
-        # Start auto-save task
-        asyncio.create_task(db.start_auto_save(self))
-        logging.info("✅ Economy system loaded with JSON database")
-    
-    async def load_data(self):
-        """Load economy data."""
-        async with self.lock:
-            self.data = await db.load_data()
-    
-    async def save_data(self):
-        """Save economy data."""
-        async with self.lock:
-            await db.save_data(self.data)
-    
-    # User management methods
-    def get_user(self, user_id: int) -> Dict:
+    # User management
+    async def get_user(self, user_id: int) -> Dict:
         """Get user data or create if doesn't exist."""
-        user_id_str = str(user_id)
-        if user_id_str not in self.data['users']:
-            self.data['users'][user_id_str] = {
-                "wallet": 100,
-                "bank": 0,
-                "bank_limit": 5000,
-                "networth": 100,
-                "daily_streak": 0,
-                "last_daily": None,
-                "total_earned": 0,
-                "created_at": datetime.now().isoformat(),
-                "last_active": datetime.now().isoformat()
-            }
-        return self.data['users'][user_id_str]
+        if not self.connected:
+            return self._get_default_user(user_id)
+            
+        user = await self.db.users.find_one({"user_id": user_id})
+        if not user:
+            user = self._get_default_user(user_id)
+            await self.db.users.insert_one(user)
+            logging.info(f"👤 New user created in MongoDB: {user_id}")
+        return user
+    
+    def _get_default_user(self, user_id: int) -> Dict:
+        """Return default user structure."""
+        return {
+            "user_id": user_id,
+            "wallet": 100,
+            "bank": 0,
+            "bank_limit": 5000,
+            "networth": 100,
+            "daily_streak": 0,
+            "last_daily": None,
+            "total_earned": 0,
+            "created_at": datetime.now(),
+            "last_active": datetime.now()
+        }
+    
+    async def update_user(self, user_id: int, update_data: Dict):
+        """Update user data."""
+        if not self.connected:
+            return
+            
+        update_data["last_active"] = datetime.now()
+        await self.db.users.update_one(
+            {"user_id": user_id},
+            {"$set": update_data}
+        )
     
     async def update_balance(self, user_id: int, wallet_change: int = 0, bank_change: int = 0) -> Dict:
         """Update user's wallet and bank balance."""
-        user = self.get_user(user_id)
+        user = await self.get_user(user_id)
         
         user['wallet'] = max(0, user['wallet'] + wallet_change)
         user['bank'] = max(0, user['bank'] + bank_change)
@@ -255,44 +168,60 @@ class Economy(commands.Cog):
             user['bank'] = user['bank_limit']
         
         user['networth'] = user['wallet'] + user['bank']
-        user['last_active'] = datetime.now().isoformat()
         
         if wallet_change > 0 or bank_change > 0:
             user['total_earned'] += (wallet_change + bank_change)
         
-        # Auto-save for significant changes
-        if abs(wallet_change) > 500 or abs(bank_change) > 500:
-            asyncio.create_task(self.save_data())
-        
+        await self.update_user(user_id, user)
         return user
     
-    async def transfer_money(self, from_user: int, to_user: int, amount: int) -> bool:
-        """Transfer money between users."""
-        from_user_data = self.get_user(from_user)
-        to_user_data = self.get_user(to_user)
-        
-        if from_user_data['wallet'] < amount:
+    # Inventory management
+    async def add_to_inventory(self, user_id: int, item: Dict):
+        """Add item to user's inventory."""
+        if not self.connected:
+            return
+            
+        inventory_item = {
+            "user_id": user_id,
+            "item_id": item["id"],
+            "name": item["name"],
+            "type": item["type"],
+            "effect": item["effect"],
+            "emoji": item["emoji"],
+            "purchased_at": datetime.now()
+        }
+        await self.db.inventory.insert_one(inventory_item)
+    
+    async def get_inventory(self, user_id: int) -> List:
+        """Get user's inventory."""
+        if not self.connected:
+            return []
+            
+        cursor = self.db.inventory.find({"user_id": user_id})
+        return await cursor.to_list(length=100)
+    
+    async def use_item(self, user_id: int, item_id: int) -> bool:
+        """Use item from inventory."""
+        if not self.connected:
             return False
-        
-        from_user_data['wallet'] -= amount
-        to_user_data['wallet'] += amount
-        
-        # Update networth
-        from_user_data['networth'] = from_user_data['wallet'] + from_user_data['bank']
-        to_user_data['networth'] = to_user_data['wallet'] + to_user_data['bank']
-        
-        asyncio.create_task(self.save_data())
-        return True
+            
+        result = await self.db.inventory.delete_one({"user_id": user_id, "item_id": item_id})
+        return result.deleted_count > 0
     
     # Cooldown management
     async def check_cooldown(self, user_id: int, command: str, cooldown_seconds: int) -> Optional[float]:
         """Check if user is on cooldown."""
-        cooldown_key = f"{user_id}_{command}"
-        last_used = self.data['cooldowns'].get(cooldown_key)
+        if not self.connected:
+            return None
+            
+        cooldown = await self.db.cooldowns.find_one({
+            "user_id": user_id,
+            "command": command
+        })
         
-        if last_used:
-            last_used_time = datetime.fromisoformat(last_used)
-            time_passed = (datetime.now() - last_used_time).total_seconds()
+        if cooldown:
+            last_used = cooldown['created_at']
+            time_passed = (datetime.now() - last_used).total_seconds()
             
             if time_passed < cooldown_seconds:
                 return cooldown_seconds - time_passed
@@ -301,45 +230,168 @@ class Economy(commands.Cog):
     
     async def set_cooldown(self, user_id: int, command: str):
         """Set cooldown for a command."""
-        cooldown_key = f"{user_id}_{command}"
-        self.data['cooldowns'][cooldown_key] = datetime.now().isoformat()
+        if not self.connected:
+            return
+            
+        await self.db.cooldowns.update_one(
+            {"user_id": user_id, "command": command},
+            {
+                "$set": {
+                    "created_at": datetime.now(),
+                    "expires_at": datetime.now() + timedelta(days=1)
+                }
+            },
+            upsert=True
+        )
+    
+    # Shop methods
+    async def get_shop_items(self) -> List:
+        """Get all shop items."""
+        if not self.connected:
+            return self._get_default_shop_items()
+            
+        shop = await self.db.shop.find_one({})
+        return shop.get('items', []) if shop else self._get_default_shop_items()
+    
+    def _get_default_shop_items(self) -> List:
+        """Return default shop items for fallback."""
+        return [
+            {
+                "id": 1, "name": "💰 Small Bank Upgrade", "price": 2000,
+                "description": "Increase your bank limit by 5,000£",
+                "type": "upgrade", "effect": {"bank_limit": 5000}, "emoji": "💰", "stock": -1
+            },
+            {
+                "id": 2, "name": "🏦 Medium Bank Upgrade", "price": 5000,
+                "description": "Increase your bank limit by 15,000£", 
+                "type": "upgrade", "effect": {"bank_limit": 15000}, "emoji": "🏦", "stock": -1
+            },
+            {
+                "id": 3, "name": "💎 Large Bank Upgrade", "price": 15000,
+                "description": "Increase your bank limit by 50,000£",
+                "type": "upgrade", "effect": {"bank_limit": 50000}, "emoji": "💎", "stock": -1
+            },
+            {
+                "id": 4, "name": "🎩 Lucky Hat", "price": 3000,
+                "description": "Increases daily reward by 20% for 7 days",
+                "type": "consumable", "effect": {"daily_bonus": 1.2, "duration": 7}, "emoji": "🎩", "stock": -1
+            },
+            {
+                "id": 5, "name": "🍀 Lucky Charm", "price": 2500,
+                "description": "Increases work earnings by 30% for 5 days",
+                "type": "consumable", "effect": {"work_bonus": 1.3, "duration": 5}, "emoji": "🍀", "stock": -1
+            }
+        ]
+    
+    async def get_stats(self):
+        """Get database statistics."""
+        if not self.connected:
+            return {"total_users": 0, "total_money": 0, "database": "disconnected"}
+            
+        total_users = await self.db.users.count_documents({})
+        
+        pipeline = [
+            {
+                "$group": {
+                    "_id": None,
+                    "total_money": {
+                        "$sum": {
+                            "$add": ["$wallet", "$bank"]
+                        }
+                    }
+                }
+            }
+        ]
+        
+        result = await self.db.users.aggregate(pipeline).to_list(length=1)
+        total_money = result[0]['total_money'] if result else 0
+        
+        return {
+            "total_users": total_users,
+            "total_money": total_money,
+            "database": "mongodb"
+        }
+
+# Global database instance
+db = MongoDB()
+
+class Economy(commands.Cog):
+    """Enhanced economy system with MongoDB persistence."""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.ready = False
+        logging.info("✅ Economy system initialized")
+    
+    async def cog_load(self):
+        """Load data when cog is loaded."""
+        # Connect to MongoDB
+        success = await db.connect()
+        if success:
+            await db.initialize_collections()
+            self.ready = True
+            logging.info("✅ Economy system loaded with MongoDB")
+        else:
+            logging.error("❌ Economy system using fallback mode (no persistence)")
+            self.ready = False
+    
+    # User management methods
+    async def get_user(self, user_id: int) -> Dict:
+        """Get user data."""
+        return await db.get_user(user_id)
+    
+    async def update_balance(self, user_id: int, wallet_change: int = 0, bank_change: int = 0) -> Dict:
+        """Update user's wallet and bank balance."""
+        return await db.update_balance(user_id, wallet_change, bank_change)
+    
+    async def transfer_money(self, from_user: int, to_user: int, amount: int) -> bool:
+        """Transfer money between users."""
+        from_user_data = await db.get_user(from_user)
+        to_user_data = await db.get_user(to_user)
+        
+        if from_user_data['wallet'] < amount:
+            return False
+        
+        # Update both users
+        await db.update_balance(from_user, wallet_change=-amount)
+        await db.update_balance(to_user, wallet_change=amount)
+        return True
+    
+    # Cooldown management
+    async def check_cooldown(self, user_id: int, command: str, cooldown_seconds: int) -> Optional[float]:
+        """Check if user is on cooldown."""
+        return await db.check_cooldown(user_id, command, cooldown_seconds)
+    
+    async def set_cooldown(self, user_id: int, command: str):
+        """Set cooldown for a command."""
+        await db.set_cooldown(user_id, command)
     
     # Inventory management
     async def add_to_inventory(self, user_id: int, item: Dict):
         """Add item to user's inventory."""
-        user_id_str = str(user_id)
-        if user_id_str not in self.data['inventory']:
-            self.data['inventory'][user_id_str] = []
-        
-        self.data['inventory'][user_id_str].append({
-            **item,
-            "purchased_at": datetime.now().isoformat()
-        })
-        
-        asyncio.create_task(self.save_data())
+        await db.add_to_inventory(user_id, item)
     
     async def get_inventory(self, user_id: int) -> List:
         """Get user's inventory."""
-        user_id_str = str(user_id)
-        return self.data['inventory'].get(user_id_str, [])
+        return await db.get_inventory(user_id)
     
     async def use_item(self, user_id: int, item_index: int) -> bool:
-        """Use item from inventory."""
-        user_id_str = str(user_id)
-        if user_id_str in self.data['inventory'] and item_index < len(self.data['inventory'][user_id_str]):
-            self.data['inventory'][user_id_str].pop(item_index)
-            asyncio.create_task(self.save_data())
-            return True
+        """Use item from inventory by index."""
+        inventory = await self.get_inventory(user_id)
+        if item_index < len(inventory):
+            item = inventory[item_index]
+            return await db.use_item(user_id, item['item_id'])
         return False
     
     # Shop methods
-    def get_shop_items(self) -> List:
+    async def get_shop_items(self) -> List:
         """Get all shop items."""
-        return self.data['shop']['items']
+        return await db.get_shop_items()
     
-    def get_shop_item(self, item_id: int) -> Optional[Dict]:
+    async def get_shop_item(self, item_id: int) -> Optional[Dict]:
         """Get specific shop item."""
-        for item in self.data['shop']['items']:
+        items = await self.get_shop_items()
+        for item in items:
             if item['id'] == item_id:
                 return item
         return None
@@ -362,8 +414,9 @@ class Economy(commands.Cog):
     
     async def create_economy_embed(self, title: str, color: discord.Color = discord.Color.gold()) -> discord.Embed:
         """Create a standardized economy embed."""
+        database_status = "✅ MongoDB" if self.ready else "⚠️ Memory Only"
         embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
-        embed.set_footer(text="Economy System | JSON Database")
+        embed.set_footer(text=f"Economy System | {database_status}")
         return embed
 
     # ========== COMMANDS ==========
@@ -372,7 +425,7 @@ class Economy(commands.Cog):
     async def balance(self, ctx: commands.Context, member: discord.Member = None):
         """Check your or someone else's balance."""
         member = member or ctx.author
-        user_data = self.get_user(member.id)
+        user_data = await self.get_user(member.id)
         
         wallet = user_data["wallet"]
         bank = user_data["bank"]
@@ -399,7 +452,7 @@ class Economy(commands.Cog):
     async def wallet(self, ctx: commands.Context, member: discord.Member = None):
         """View your wallet balance."""
         member = member or ctx.author
-        user_data = self.get_user(member.id)
+        user_data = await self.get_user(member.id)
         
         embed = await self.create_economy_embed(f"💵 {member.display_name}'s Wallet")
         embed.set_thumbnail(url=member.display_avatar.url)
@@ -416,7 +469,7 @@ class Economy(commands.Cog):
     async def bank(self, ctx: commands.Context, member: discord.Member = None):
         """View your bank balance."""
         member = member or ctx.author
-        user_data = self.get_user(member.id)
+        user_data = await self.get_user(member.id)
         
         bank = user_data["bank"]
         bank_limit = user_data["bank_limit"]
@@ -444,7 +497,7 @@ class Economy(commands.Cog):
     async def networth(self, ctx: commands.Context, member: discord.Member = None):
         """View your total net worth."""
         member = member or ctx.author
-        user_data = self.get_user(member.id)
+        user_data = await self.get_user(member.id)
         
         wallet = user_data["wallet"]
         bank = user_data["bank"]
@@ -490,7 +543,7 @@ class Economy(commands.Cog):
     @commands.command(name="deposit", aliases=["dep"])
     async def deposit(self, ctx: commands.Context, amount: str):
         """Deposit money from wallet to bank."""
-        user_data = self.get_user(ctx.author.id)
+        user_data = await self.get_user(ctx.author.id)
         wallet = user_data["wallet"]
         bank = user_data["bank"]
         bank_limit = user_data["bank_limit"]
@@ -539,7 +592,7 @@ class Economy(commands.Cog):
     @commands.command(name="withdraw", aliases=["with"])
     async def withdraw(self, ctx: commands.Context, amount: str):
         """Withdraw money from bank to wallet."""
-        user_data = self.get_user(ctx.author.id)
+        user_data = await self.get_user(ctx.author.id)
         wallet = user_data["wallet"]
         bank = user_data["bank"]
         
@@ -587,7 +640,7 @@ class Economy(commands.Cog):
             embed.description = f"You can claim your daily reward again in **{self.format_time(remaining)}**"
             return await ctx.send(embed=embed)
         
-        user_data = self.get_user(ctx.author.id)
+        user_data = await self.get_user(ctx.author.id)
         
         # Calculate reward with streak bonus
         base_reward = random.randint(500, 1000)
@@ -684,7 +737,7 @@ class Economy(commands.Cog):
         else:
             # Failed crime - lose money
             loss = random.randint(100, 400)
-            user_data = self.get_user(ctx.author.id)
+            user_data = await self.get_user(ctx.author.id)
             actual_loss = min(loss, user_data["wallet"])
             
             failures = [
@@ -705,7 +758,7 @@ class Economy(commands.Cog):
     @commands.command(name="shop", aliases=["store"])
     async def shop(self, ctx: commands.Context):
         """Browse the shop for upgrades and items."""
-        shop_items = self.get_shop_items()
+        shop_items = await self.get_shop_items()
         
         if not shop_items:
             embed = await self.create_economy_embed("🛍️ Shop")
@@ -734,7 +787,7 @@ class Economy(commands.Cog):
     @commands.command(name="buy", aliases=["purchase"])
     async def buy(self, ctx: commands.Context, item_id: int):
         """Purchase an item from the shop."""
-        item = self.get_shop_item(item_id)
+        item = await self.get_shop_item(item_id)
         if not item:
             embed = await self.create_economy_embed("❌ Item Not Found", discord.Color.red())
             embed.description = f"No item found with ID `{item_id}`. Use `~~shop` to see available items."
@@ -747,7 +800,7 @@ class Economy(commands.Cog):
             return await ctx.send(embed=embed)
         
         # Check balance
-        user_data = self.get_user(ctx.author.id)
+        user_data = await self.get_user(ctx.author.id)
         if user_data["wallet"] < item["price"]:
             embed = await self.create_economy_embed("❌ Insufficient Funds", discord.Color.red())
             embed.description = f"You need {self.format_money(item['price'])} but only have {self.format_money(user_data['wallet'])} in your wallet."
@@ -762,17 +815,11 @@ class Economy(commands.Cog):
             effect = item["effect"]
             if "bank_limit" in effect:
                 user_data["bank_limit"] += effect["bank_limit"]
-                await self.save_data()
+                await db.update_user(ctx.author.id, user_data)
         
         elif item["type"] in ["consumable", "permanent"]:
             # Add to inventory
-            await self.add_to_inventory(ctx.author.id, {
-                "id": item["id"],
-                "name": item["name"],
-                "type": item["type"],
-                "effect": item["effect"],
-                "emoji": item["emoji"]
-            })
+            await self.add_to_inventory(ctx.author.id, item)
         
         # Update shop stock
         if item.get("stock", -1) > 0:
@@ -846,7 +893,6 @@ class Economy(commands.Cog):
             return await ctx.send(embed=embed)
         
         item = consumables[item_number - 1]
-        item_index = inventory.index(item)
         
         # Apply item effects
         effect = item["effect"]
@@ -864,10 +910,15 @@ class Economy(commands.Cog):
             result_text = f"You opened the mystery box and found {self.format_money(reward)}! 🎉"
         
         # Remove item from inventory
-        await self.use_item(ctx.author.id, item_index)
+        success = await self.use_item(ctx.author.id, item_number - 1)
         
-        embed = await self.create_economy_embed(f"✅ {item['emoji']} {item['name']} Used!", discord.Color.green())
-        embed.description = result_text
+        if success:
+            embed = await self.create_economy_embed(f"✅ {item['emoji']} {item['name']} Used!", discord.Color.green())
+            embed.description = result_text
+        else:
+            embed = await self.create_economy_embed("❌ Error", discord.Color.red())
+            embed.description = "Failed to use the item."
+        
         await ctx.send(embed=embed)
 
     @commands.command(name="pay", aliases=["give", "transfer"])
@@ -889,7 +940,7 @@ class Economy(commands.Cog):
             return await ctx.send(embed=embed)
         
         # Check if user has enough money
-        user_data = self.get_user(ctx.author.id)
+        user_data = await self.get_user(ctx.author.id)
         if user_data["wallet"] < amount:
             embed = await self.create_economy_embed("❌ Insufficient Funds", discord.Color.red())
             embed.description = f"You only have {self.format_money(user_data['wallet'])} in your wallet."
@@ -911,22 +962,19 @@ class Economy(commands.Cog):
     @commands.command(name="leaderboard", aliases=["lb", "top", "rich"])
     async def leaderboard(self, ctx: commands.Context):
         """Show the wealth leaderboard."""
-        users_data = self.data['users']
+        # Get all users from database
+        if not db.connected:
+            embed = await self.create_economy_embed("📊 Leaderboard")
+            embed.description = "Database not connected. Leaderboard unavailable."
+            return await ctx.send(embed=embed)
         
-        if not users_data:
+        cursor = db.db.users.find().sort("networth", -1).limit(10)
+        top_users = await cursor.to_list(length=10)
+        
+        if not top_users:
             embed = await self.create_economy_embed("📊 Leaderboard")
             embed.description = "No users have any money yet! Be the first to earn some!"
             return await ctx.send(embed=embed)
-        
-        # Calculate total wealth for each user
-        user_totals = []
-        for user_id, user_data in users_data.items():
-            total = user_data.get("wallet", 0) + user_data.get("bank", 0)
-            if total > 0:
-                user_totals.append((int(user_id), total, user_data))
-        
-        # Sort by total wealth
-        user_totals.sort(key=lambda x: x[1], reverse=True)
         
         embed = await self.create_economy_embed("📊 Wealth Leaderboard")
         embed.description = "Top 10 richest users on the server"
@@ -935,13 +983,15 @@ class Economy(commands.Cog):
         emojis = ["💎", "💰", "🏦", "💵", "💴", "💶", "💷", "🪙", "💳", "📈"]
         
         leaderboard_text = ""
-        for i, (user_id, total, user_data) in enumerate(user_totals[:10]):
+        for i, user_data in enumerate(top_users):
+            user_id = user_data["user_id"]
             user = self.bot.get_user(user_id)
             username = user.display_name if user else f"User {user_id}"
             
             medal = medals[i] if i < 3 else emojis[i]
             wallet = user_data.get("wallet", 0)
             bank = user_data.get("bank", 0)
+            total = wallet + bank
             
             leaderboard_text += (
                 f"{medal} **{username}**\n"
@@ -951,33 +1001,46 @@ class Economy(commands.Cog):
         
         embed.add_field(name="🏆 Top Wealth", value=leaderboard_text, inline=False)
         
-        # Show user's position if they're not in top 10
-        author_position = None
-        for i, (user_id, total, _) in enumerate(user_totals):
-            if user_id == ctx.author.id:
-                author_position = i + 1
-                break
+        # Show user's position
+        total_users = await db.db.users.count_documents({})
+        user_rank_cursor = db.db.users.find({"user_id": ctx.author.id})
+        user_rank_data = await user_rank_cursor.to_list(length=1)
         
-        if author_position and author_position > 10:
+        if user_rank_data:
+            # Find rank by networth
+            user_networth = user_rank_data[0].get("networth", 0)
+            rank_cursor = db.db.users.count_documents({"networth": {"$gt": user_networth}})
+            user_rank = await rank_cursor + 1
+            
+            if user_rank > 10:
+                embed.add_field(
+                    name="📈 Your Position", 
+                    value=f"You are ranked **#{user_rank}** out of {total_users} users", 
+                    inline=False
+                )
+        
+        embed.set_footer(text=f"Total tracked users: {total_users} | MongoDB Atlas")
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="dbstatus")
+    async def db_status(self, ctx: commands.Context):
+        """Check database connection status."""
+        stats = await db.get_stats()
+        
+        embed = await self.create_economy_embed("🗄️ Database Status", discord.Color.blue())
+        embed.add_field(name="🔌 Connection", value="✅ Connected" if self.ready else "❌ Disconnected", inline=True)
+        embed.add_field(name="👥 Total Users", value=stats['total_users'], inline=True)
+        embed.add_field(name="💰 Total Money", value=self.format_money(stats['total_money']), inline=True)
+        embed.add_field(name="💾 Database", value=stats.get('database', 'Unknown'), inline=True)
+        
+        if not self.ready:
             embed.add_field(
-                name="📈 Your Position", 
-                value=f"You are ranked **#{author_position}** out of {len(user_totals)} users", 
+                name="⚠️ Warning", 
+                value="Running in memory-only mode. Data will reset on restart!", 
                 inline=False
             )
         
-        embed.set_footer(text=f"Total tracked users: {len(user_totals)}")
-        
-        await ctx.send(embed=embed)
-    
-    # NOTE: Removed the duplicate economystats command - it's now only in admin.py
-    
-    @commands.command(name="saveeconomy", aliases=["forcedsave"])
-    @commands.has_permissions(administrator=True)
-    async def force_save(self, ctx: commands.Context):
-        """Force save economy data (Admin only)."""
-        await self.save_data()
-        embed = await self.create_economy_embed("💾 Manual Save", discord.Color.green())
-        embed.description = "Economy data has been manually saved with backup rotation."
         await ctx.send(embed=embed)
 
 async def setup(bot):
