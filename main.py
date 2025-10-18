@@ -7,7 +7,7 @@ import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 import webserver
-import aiofiles
+import aiohttp
 import sys
 import traceback
 
@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # ---------------- Setup ----------------
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+MONGODB_URI = os.getenv("MONGODB_URI")
 KEEP_ALIVE = os.getenv("KEEP_ALIVE", "true").lower() == "true"
 
 # Enhanced logging setup
@@ -24,6 +25,10 @@ def setup_logging():
     """Setup comprehensive logging with both file and console output."""
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
+    
+    # Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
     
     # File handler
     file_handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="a")
@@ -60,7 +65,19 @@ class ConfigManager:
             "member_numbers": {},
             "prefix": "~~",
             "allowed_channels": [],
-            "mod_log_channel": None
+            "mod_log_channel": None,
+            "economy_settings": {
+                "starting_balance": 1000,
+                "daily_min": 500,
+                "daily_max": 1500,
+                "work_min": 200,
+                "work_max": 800
+            },
+            "market_settings": {
+                "tax_rate": 0.05,
+                "max_listings": 10,
+                "listing_fee": 0
+            }
         }
         self._ensure_config_exists()
     
@@ -77,7 +94,9 @@ class ConfigManager:
             try:
                 with open(self.filename, "r") as f:
                     config = json.load(f)
-                return {**self.default_config, **config}
+                # Deep merge with defaults
+                merged_config = self._deep_merge(self.default_config.copy(), config)
+                return merged_config
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 logging.error(f"Config load error: {e}, using defaults")
                 return self.default_config.copy()
@@ -86,7 +105,7 @@ class ConfigManager:
         """Save configuration to file with validation."""
         async with self.lock:
             try:
-                validated_data = {**self.default_config, **data}
+                validated_data = self._deep_merge(self.default_config.copy(), data)
                 with open(self.filename, "w") as f:
                     json.dump(validated_data, f, indent=2, ensure_ascii=False)
                 logging.info("Config saved successfully")
@@ -94,6 +113,15 @@ class ConfigManager:
             except Exception as e:
                 logging.error(f"Config save error: {e}")
                 return False
+    
+    def _deep_merge(self, base, update):
+        """Deep merge two dictionaries."""
+        for key, value in update.items():
+            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
+                base[key] = self._deep_merge(base[key], value)
+            else:
+                base[key] = value
+        return base
 
 class MessageFilter:
     def __init__(self):
@@ -153,9 +181,81 @@ class MessageFilter:
         
         return False, None
 
+class DatabaseManager:
+    def __init__(self):
+        self.uri = MONGODB_URI
+        self.client = None
+        self.db = None
+        self.is_connected = False
+        
+    async def connect(self):
+        """Connect to MongoDB database."""
+        try:
+            if not self.uri:
+                logging.error("MONGODB_URI not found in environment variables")
+                return False
+                
+            import pymongo
+            from pymongo import MongoClient
+            import certifi
+            
+            self.client = MongoClient(self.uri, tlsCAFile=certifi.where())
+            self.db = self.client.get_database('discord_bot')
+            
+            # Test connection
+            self.client.admin.command('ping')
+            self.is_connected = True
+            
+            # Setup indexes
+            await self._setup_indexes()
+            
+            logging.info("✅ Successfully connected to MongoDB")
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ MongoDB connection failed: {e}")
+            self.is_connected = False
+            return False
+    
+    async def _setup_indexes(self):
+        """Create necessary database indexes."""
+        try:
+            # Users collection indexes
+            self.db.users.create_index("user_id", unique=True)
+            
+            # Market items collection indexes
+            self.db.market_items.create_index("item_id", unique=True)
+            self.db.market_items.create_index("seller_id")
+            self.db.market_items.create_index([("item_name", "text")])
+            
+            # Inventory collection indexes
+            self.db.inventory.create_index([("user_id", 1), ("item_name", 1)], unique=True)
+            
+            # Servers collection indexes
+            self.db.servers.create_index("server_id", unique=True)
+            
+            logging.info("✅ Database indexes created")
+        except Exception as e:
+            logging.error(f"❌ Failed to create indexes: {e}")
+    
+    def get_collection(self, name):
+        """Get a MongoDB collection."""
+        if not self.is_connected:
+            logging.error("Database not connected")
+            return None
+        return self.db[name]
+    
+    async def close(self):
+        """Close database connection."""
+        if self.client:
+            self.client.close()
+            self.is_connected = False
+            logging.info("Database connection closed")
+
 # ---------------- Create Manager Instances ----------------
 config_manager = ConfigManager()
 message_filter = MessageFilter()
+database_manager = DatabaseManager()
 
 # ---------------- Bot Class (Define AFTER managers) ----------------
 class Bot(commands.Bot):
@@ -172,6 +272,7 @@ class Bot(commands.Bot):
         # Now ConfigManager and MessageFilter are defined, so we can use them
         self.config_manager = config_manager
         self.message_filter = message_filter
+        self.database_manager = database_manager
     
     async def on_ready(self):
         """Enhanced on_ready with more detailed startup info."""
@@ -384,7 +485,8 @@ async def _show_general_help(ctx: commands.Context):
     general_commands = [
         "`help` - Shows this message",
         "`ping` - Check bot latency",
-        "`hello` - Say hello to the bot"
+        "`hello` - Say hello to the bot",
+        "`status` - Check bot and database status"
     ]
     
     embed.add_field(
@@ -650,14 +752,72 @@ async def market_help(ctx: commands.Context):
     """Direct market help command."""
     await _show_market_help(ctx)
 
+# ---------------- Status Command ----------------
+@bot.command(name="status")
+async def status_command(ctx: commands.Context):
+    """Check bot and database status."""
+    embed = discord.Embed(title="🤖 Bot Status", color=discord.Color.blue())
+    
+    # Bot info
+    embed.add_field(
+        name="Bot Status",
+        value=f"✅ Online since <t:{int(bot.start_time.timestamp())}:R>",
+        inline=False
+    )
+    
+    # Latency
+    embed.add_field(
+        name="Latency",
+        value=f"🏓 {round(bot.latency * 1000)}ms",
+        inline=True
+    )
+    
+    # Guild count
+    embed.add_field(
+        name="Servers",
+        value=f"📊 {len(bot.guilds)}",
+        inline=True
+    )
+    
+    # Database status
+    db_status = "✅ Connected" if bot.database_manager.is_connected else "❌ Disconnected"
+    embed.add_field(
+        name="Database",
+        value=db_status,
+        inline=True
+    )
+    
+    # Cogs loaded
+    cog_count = len(bot.cogs)
+    embed.add_field(
+        name="Cogs Loaded",
+        value=f"⚙️ {cog_count}",
+        inline=True
+    )
+    
+    # Uptime
+    uptime = datetime.now(timezone.utc) - bot.start_time
+    embed.add_field(
+        name="Uptime",
+        value=f"⏰ {str(uptime).split('.')[0]}",
+        inline=True
+    )
+    
+    await ctx.send(embed=embed)
+
 # ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
     loaded_count = 0
     
+    # Connect to database first
+    db_connected = await bot.database_manager.connect()
+    if not db_connected:
+        logging.error("❌ Database connection failed - some features may not work")
+    
     # Load admin cog
     try:
-        await bot.load_extension("admin")
+        await bot.load_extension("cogs.admin")
         logging.info("✅ Loaded cog: admin")
         loaded_count += 1
     except Exception as e:
@@ -665,97 +825,43 @@ async def load_cogs():
     
     # Load economy cog
     try:
-        if "economy" in bot.extensions:
-            await bot.reload_extension("economy")
-        else:
-            await bot.load_extension("economy")
+        await bot.load_extension("cogs.economy")
         logging.info("✅ Loaded cog: economy")
         loaded_count += 1
     except Exception as e:
         logging.error(f"❌ Failed to load economy cog: {e}")
     
-    # Load markets cog manually
+    # Load market cog
     try:
-        # Check if markets folder exists
-        if os.path.exists("markets"):
-            logging.info("📁 Markets folder found, attempting to load...")
-            
-            # Debug: List files in markets folder
-            market_files = os.listdir("markets")
-            logging.info(f"📂 Markets folder contents: {market_files}")
-            
-            # Import and add the cog manually
-            from markets.market_cog import MarketCog
-            logging.info("✅ MarketCog imported successfully")
-            
-            market_cog = MarketCog(bot)
-            logging.info("✅ MarketCog instance created")
-            
-            await bot.add_cog(market_cog)
-            logging.info("✅ MarketCog added to bot")
-            
-            # Debug: Check what commands are registered
-            market_commands = [cmd.name for cmd in market_cog.get_commands()]
-            logging.info(f"📝 Market commands registered: {market_commands}")
-            
-            loaded_count += 1
-        else:
-            logging.warning("⚠️ Markets folder not found, skipping markets cog")
-            
-    except ImportError as e:
-        logging.error(f"❌ Import error loading markets cog: {e}")
-    except Exception as e:
-        logging.error(f"❌ Unexpected error loading markets cog: {e}")
-        logging.error(f"❌ Full traceback: {traceback.format_exc()}")
-    
-    # Test cog
-    try:
-        from test_cog import TestCog
-        await bot.add_cog(TestCog(bot))
-        logging.info("✅ Test cog loaded")
+        await bot.load_extension("cogs.market")
+        logging.info("✅ Loaded cog: market")
         loaded_count += 1
     except Exception as e:
-        logging.error(f"❌ Test cog failed: {e}")
+        logging.error(f"❌ Failed to load market cog: {e}")
+    
+    # Load test cog if exists
+    try:
+        await bot.load_extension("cogs.test")
+        logging.info("✅ Loaded cog: test")
+        loaded_count += 1
+    except Exception as e:
+        logging.debug(f"Test cog not loaded: {e}")
     
     logging.info(f"📊 Cogs loaded: {loaded_count}/4")
 
 async def reload_cogs():
     """Reload all cogs."""
-    # Reload admin and economy normally
-    for cog in ["admin", "economy"]:
+    reloaded_count = 0
+    
+    for cog_name in ["admin", "economy", "market", "test"]:
         try:
-            await bot.reload_extension(cog)
-            logging.info(f"🔄 Reloaded cog: {cog}")
+            await bot.reload_extension(f"cogs.{cog_name}")
+            logging.info(f"🔄 Reloaded cog: {cog_name}")
+            reloaded_count += 1
         except Exception as e:
-            logging.error(f"❌ Failed to reload cog {cog}: {e}")
+            logging.error(f"❌ Failed to reload cog {cog_name}: {e}")
     
-    # Handle markets cog specially
-    try:
-        if os.path.exists("markets"):
-            # Remove existing markets cog if it exists
-            existing_cog = bot.get_cog("MarketCog")
-            if existing_cog:
-                await bot.remove_cog("MarketCog")
-            
-            # Reload and re-add
-            from markets.market_cog import MarketCog
-            market_cog = MarketCog(bot)
-            await bot.add_cog(market_cog)
-            logging.info("🔄 Reloaded cog: markets")
-    except Exception as e:
-        logging.error(f"❌ Failed to reload markets cog: {e}")
-    
-    # Handle test cog
-    try:
-        existing_test_cog = bot.get_cog("TestCog")
-        if existing_test_cog:
-            await bot.remove_cog("TestCog")
-        
-        from test_cog import TestCog
-        await bot.add_cog(TestCog(bot))
-        logging.info("🔄 Reloaded cog: test")
-    except Exception as e:
-        logging.error(f"❌ Failed to reload test cog: {e}")
+    logging.info(f"📊 Cogs reloaded: {reloaded_count}/4")
 
 # ---------------- Bot Events ----------------
 @bot.event
@@ -763,8 +869,10 @@ async def setup_hook():
     """Enhanced setup hook with data directory initialization."""
     logging.info("🔧 Starting bot setup...")
     
+    # Create necessary directories
     os.makedirs("data", exist_ok=True)
-    logging.info("📁 Data directory initialized")
+    os.makedirs("cogs", exist_ok=True)
+    logging.info("📁 Directories initialized")
     
     await load_cogs()
     auto_cleaner.start()
@@ -776,6 +884,10 @@ async def on_ready():
     """Enhanced on_ready with more detailed startup info."""
     logging.info(f"✅ Bot is ready as {bot.user} (ID: {bot.user.id})")
     logging.info(f"📊 Connected to {len(bot.guilds)} guild(s)")
+    
+    # Log guild names
+    for guild in bot.guilds:
+        logging.info(f"   - {guild.name} (ID: {guild.id}, Members: {guild.member_count})")
     
     await bot.change_presence(
         activity=discord.Activity(
@@ -844,10 +956,16 @@ if KEEP_ALIVE:
 if __name__ == "__main__":
     try:
         logging.info("🚀 Starting bot...")
+        if not TOKEN:
+            logging.critical("❌ DISCORD_TOKEN environment variable not set!")
+            exit(1)
         bot.run(TOKEN)
     except KeyboardInterrupt:
         logging.info("⏹️ Bot stopped by user")
+        if bot.database_manager.is_connected:
+            bot.database_manager.close()
     except discord.LoginFailure:
         logging.critical("❌ Invalid Discord token")
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
+        traceback.print_exc()
