@@ -9,6 +9,8 @@ from datetime import datetime, timezone, timedelta
 import webserver
 import aiofiles
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 # ---------------- Setup ----------------
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -778,3 +780,4 @@ if __name__ == "__main__":
         logging.critical("❌ Invalid Discord token")
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
+
