@@ -177,7 +177,7 @@ class Bot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="~~help | Economy & Games"
+                name="~~help | Economy & Markets"
             ),
             status=discord.Status.online
         )
@@ -362,7 +362,7 @@ async def before_auto_cleaner():
 @bot.command(name="help")
 async def help_command(ctx: commands.Context, category: str = None):
     """Main help command with categories. Use ~~help admin or ~~help economy."""
-    if category and category.lower() in ["admin", "economy"]:
+    if category and category.lower() in ["admin", "economy", "market"]:
         await _show_category_help(ctx, category.lower())
     else:
         await _show_general_help(ctx)
@@ -394,6 +394,7 @@ async def _show_general_help(ctx: commands.Context):
         value=(
             "**~~admin** - Moderation and server management\n"
             "**~~economy** - Money, games, and economy system\n"
+            "**~~market** - Commodity trading and markets\n"
             "**~~help <category>** - Show specific category help"
         ),
         inline=False
@@ -404,12 +405,13 @@ async def _show_general_help(ctx: commands.Context):
         value=(
             "• Use `~~economy` to see money commands\n"
             "• Use `~~admin` for moderation tools\n"
+            "• Use `~~market` for commodity trading\n"
             "• Most commands have cooldowns for balance"
         ),
         inline=False
     )
     
-    embed.set_footer(text=f"Use ~~help admin or ~~help economy for detailed commands")
+    embed.set_footer(text=f"Use ~~help admin, ~~help economy, or ~~help market for detailed commands")
     await ctx.send(embed=embed)
 
 async def _show_category_help(ctx: commands.Context, category: str):
@@ -418,6 +420,8 @@ async def _show_category_help(ctx: commands.Context, category: str):
         await _show_admin_help(ctx)
     elif category == "economy":
         await _show_economy_help(ctx)
+    elif category == "market":
+        await _show_market_help(ctx)
 
 async def _show_admin_help(ctx: commands.Context):
     """Show admin/moderation commands."""
@@ -569,6 +573,62 @@ async def _show_economy_help(ctx: commands.Context):
     embed.set_footer(text="Most commands have cooldowns - check individual command help")
     await ctx.send(embed=embed)
 
+async def _show_market_help(ctx: commands.Context):
+    """Show market trading commands."""
+    embed = discord.Embed(
+        title="🏛️ Market Trading Commands",
+        description="Realistic commodity trading with economic simulation.",
+        color=discord.Color.green()
+    )
+    
+    # Market Commands
+    market_cmds = [
+        "`market` - Main market command overview",
+        "`market prices` - View current commodity prices",
+        "`market buy <commodity> <quantity>` - Buy/Long a commodity",
+        "`market sell <commodity> <quantity>` - Sell/Short a commodity",
+        "`market close <commodity>` - Close an open position",
+        "`market portfolio` - View your trading portfolio",
+        "`market info <commodity>` - Detailed commodity information",
+        "`market economy` - View economic indicators"
+    ]
+    
+    embed.add_field(
+        name="📊 Trading Commands",
+        value="\n".join(market_cmds),
+        inline=False
+    )
+    
+    # Available Commodities
+    commodities_info = [
+        "**GOLD** - Precious metal, safe haven asset",
+        "**SILVER** - Industrial and precious metal", 
+        "**OIL** - Global energy benchmark",
+        "**COPPER** - Industrial metal, economic indicator"
+    ]
+    
+    embed.add_field(
+        name="💎 Available Commodities",
+        value="\n".join(commodities_info),
+        inline=False
+    )
+    
+    # Trading Basics
+    embed.add_field(
+        name="💡 Trading Basics",
+        value=(
+            "• **Buy** = Go long (profit if price rises)\n"
+            "• **Sell** = Go short (profit if price falls)\n" 
+            "• Prices update every 5 seconds automatically\n"
+            "• Economic events affect all markets\n"
+            "• Start with $10,000 trading capital"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Market data simulates real economic factors and volatility")
+    await ctx.send(embed=embed)
+
 # ---------------- New Category Help Commands ----------------
 @bot.command(name="admin")
 async def admin_help(ctx: commands.Context):
@@ -580,10 +640,15 @@ async def economy_help(ctx: commands.Context):
     """Direct economy help command."""
     await _show_economy_help(ctx)
 
+@bot.command(name="market")
+async def market_help(ctx: commands.Context):
+    """Direct market help command."""
+    await _show_market_help(ctx)
+
 # ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
-    cogs = ["admin", "economy"]
+    cogs = ["admin", "economy", "markets.market_cog"]  # Added markets cog
     loaded_count = 0
     
     for cog in cogs:
@@ -611,7 +676,7 @@ async def load_cogs():
 
 async def reload_cogs():
     """Reload all cogs."""
-    cogs = ["admin", "economy"]
+    cogs = ["admin", "economy", "markets.market_cog"]  # Added markets cog
     for cog in cogs:
         try:
             await bot.reload_extension(cog)
@@ -642,7 +707,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="~~help | Economy & Games"
+            name="~~help | Economy & Markets"
         ),
         status=discord.Status.online
     )
