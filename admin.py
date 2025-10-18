@@ -569,16 +569,16 @@ class Admin(commands.Cog):
     async def reload_cogs(self, ctx: commands.Context):
         """Reload all bot cogs."""
         try:
-            cogs = ["admin", "economy"]
+            cogs = ["cogs.admin", "cogs.economy", "cogs.market"]
             reloaded = []
             failed = []
             
             for cog in cogs:
                 try:
                     await self.bot.reload_extension(cog)
-                    reloaded.append(cog)
+                    reloaded.append(cog.replace("cogs.", ""))
                 except Exception as e:
-                    failed.append(f"{cog}: {e}")
+                    failed.append(f"{cog.replace('cogs.', '')}: {str(e)}")
             
             embed = discord.Embed(
                 title="🔄 Cog Reload Results",
@@ -627,7 +627,7 @@ class Admin(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    # -------------------- Economy Admin Commands --------------------
+    # -------------------- Economy Admin Commands (MongoDB Updated) --------------------
     @commands.command(name="economygive", aliases=["egive", "agive"])
     async def economy_give(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin: Give money to a user's wallet."""
@@ -640,18 +640,50 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
-        # FIX: await the coroutine
-        await economy_cog.update_balance(member.id, wallet_change=amount)
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be positive.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
         
-        embed = discord.Embed(
-            title="✅ Money Given",
-            description=f"Gave {amount:,}£ to {member.mention}",
-            color=discord.Color.green()
-        )
-        await ctx.send(embed=embed)
-        
-        # Log the action
-        await self.log_mod_action("economy_give", ctx.author, member, f"Given {amount:,}£")
+        try:
+            # Use MongoDB to update balance
+            users_collection = self.bot.database_manager.get_collection('users')
+            if not users_collection:
+                embed = discord.Embed(
+                    title="❌ Database Error",
+                    description="Database connection not available.",
+                    color=discord.Color.red()
+                )
+                return await ctx.send(embed=embed)
+            
+            # Update user balance
+            result = users_collection.update_one(
+                {"user_id": str(member.id)},
+                {"$inc": {"balance": amount}},
+                upsert=True
+            )
+            
+            embed = discord.Embed(
+                title="✅ Money Given",
+                description=f"Gave **${amount:,}** to {member.mention}",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+            
+            # Log the action
+            await self.log_mod_action("economy_give", ctx.author, member, f"Given ${amount:,}")
+            
+        except Exception as e:
+            logging.error(f"Error giving money: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while giving money.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
 
     @commands.command(name="economytake", aliases=["etake", "atake"])
     async def economy_take(self, ctx: commands.Context, member: discord.Member, amount: int):
@@ -665,20 +697,65 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
-        # FIX: await the coroutine and then access the data
-        user_data = await economy_cog.get_user(member.id)  # Add await here
-        taken = min(amount, user_data["wallet"])  # Now user_data is a dict, not a coroutine
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be positive.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
         
-        await economy_cog.update_balance(member.id, wallet_change=-taken)
-        
-        embed = discord.Embed(
-            title="✅ Money Taken",
-            description=f"Took {taken:,}£ from {member.mention}",
-            color=discord.Color.orange()
-        )
-        await ctx.send(embed=embed)
-        
-        await self.log_mod_action("economy_take", ctx.author, member, f"Taken {taken:,}£")
+        try:
+            # Use MongoDB to update balance
+            users_collection = self.bot.database_manager.get_collection('users')
+            if not users_collection:
+                embed = discord.Embed(
+                    title="❌ Database Error",
+                    description="Database connection not available.",
+                    color=discord.Color.red()
+                )
+                return await ctx.send(embed=embed)
+            
+            # Get current balance
+            user_data = users_collection.find_one({"user_id": str(member.id)})
+            current_balance = user_data.get('balance', 1000) if user_data else 1000
+            
+            # Calculate how much we can actually take
+            taken = min(amount, current_balance)
+            
+            if taken > 0:
+                # Update user balance
+                users_collection.update_one(
+                    {"user_id": str(member.id)},
+                    {"$inc": {"balance": -taken}},
+                    upsert=True
+                )
+                
+                embed = discord.Embed(
+                    title="✅ Money Taken",
+                    description=f"Took **${taken:,}** from {member.mention}",
+                    color=discord.Color.orange()
+                )
+            else:
+                embed = discord.Embed(
+                    title="❌ Insufficient Funds",
+                    description=f"{member.mention} doesn't have enough money to take.",
+                    color=discord.Color.red()
+                )
+            
+            await ctx.send(embed=embed)
+            
+            if taken > 0:
+                await self.log_mod_action("economy_take", ctx.author, member, f"Taken ${taken:,}")
+            
+        except Exception as e:
+            logging.error(f"Error taking money: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while taking money.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
 
     @commands.command(name="economyset", aliases=["eset", "aset"])
     async def economy_set(self, ctx: commands.Context, member: discord.Member, wallet: int = None, bank: int = None):
@@ -699,137 +776,169 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
 
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
+        try:
+            users_collection = self.bot.database_manager.get_collection('users')
+            if not users_collection:
+                embed = discord.Embed(
+                    title="❌ Database Error",
+                    description="Database connection not available.",
+                    color=discord.Color.red()
+                )
+                return await ctx.send(embed=embed)
+            
+            # Get current user data
+            user_data = users_collection.find_one({"user_id": str(member.id)})
+            
+            update_data = {}
+            if wallet is not None:
+                update_data["balance"] = wallet
+            if bank is not None:
+                update_data["bank_balance"] = bank
+            
+            # Update user data
+            users_collection.update_one(
+                {"user_id": str(member.id)},
+                {"$set": update_data},
+                upsert=True
+            )
+            
             embed = discord.Embed(
-                title="❌ Economy System Unavailable",
-                description="Economy cog is not loaded.",
+                title="✅ Balance Set",
+                description=f"Updated {member.mention}'s balance",
+                color=discord.Color.green()
+            )
+            
+            if wallet is not None:
+                embed.add_field(name="💵 Wallet", value=f"${wallet:,}", inline=True)
+            if bank is not None:
+                embed.add_field(name="🏦 Bank", value=f"${bank:,}", inline=True)
+            
+            await ctx.send(embed=embed)
+            
+            action_desc = f"Set wallet: ${wallet}, bank: ${bank}" if wallet and bank else f"Set wallet: ${wallet}" if wallet else f"Set bank: ${bank}"
+            await self.log_mod_action("economy_set", ctx.author, member, action_desc)
+            
+        except Exception as e:
+            logging.error(f"Error setting balance: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while setting the balance.",
                 color=discord.Color.red()
             )
-            return await ctx.send(embed=embed)
-        
-        # FIX: await the coroutine
-        user_data = await economy_cog.get_user(member.id)  # Add await here
-        
-        wallet_change = 0
-        bank_change = 0
-        
-        if wallet is not None:
-            wallet_change = wallet - user_data["wallet"]
-        
-        if bank is not None:
-            bank_change = bank - user_data["bank"]
-        
-        await economy_cog.update_balance(member.id, wallet_change=wallet_change, bank_change=bank_change)
-        
-        embed = discord.Embed(
-            title="✅ Balance Set",
-            description=f"Updated {member.mention}'s balance",
-            color=discord.Color.green()
-        )
-        
-        if wallet is not None:
-            embed.add_field(name="💵 Wallet", value=f"{wallet:,}£", inline=True)
-        if bank is not None:
-            embed.add_field(name="🏦 Bank", value=f"{bank:,}£", inline=True)
-        
-        await ctx.send(embed=embed)
-        
-        action_desc = f"Set wallet: {wallet}, bank: {bank}" if wallet and bank else f"Set wallet: {wallet}" if wallet else f"Set bank: {bank}"
-        await self.log_mod_action("economy_set", ctx.author, member, action_desc)
+            await ctx.send(embed=embed)
 
     @commands.command(name="economyreset", aliases=["ereset", "areset"])
     async def economy_reset(self, ctx: commands.Context, member: discord.Member):
         """Admin: Reset a user's entire economy data."""
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
-            embed = discord.Embed(
-                title="❌ Economy System Unavailable",
-                description="Economy cog is not loaded.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        # Get the database instance from economy cog
-        from economy import db
-        
-        # Reset user data
-        user_id_str = str(member.id)
-        if db.connected and db.db:
-            # Reset in MongoDB
-            await db.db.users.update_one(
-                {"user_id": member.id},
+        try:
+            users_collection = self.bot.database_manager.get_collection('users')
+            inventory_collection = self.bot.database_manager.get_collection('inventory')
+            
+            if not users_collection or not inventory_collection:
+                embed = discord.Embed(
+                    title="❌ Database Error",
+                    description="Database connection not available.",
+                    color=discord.Color.red()
+                )
+                return await ctx.send(embed=embed)
+            
+            # Reset user data
+            users_collection.update_one(
+                {"user_id": str(member.id)},
                 {"$set": {
-                    "wallet": 100,
-                    "bank": 0,
-                    "bank_limit": 5000,
-                    "networth": 100,
-                    "daily_streak": 0,
+                    "balance": 1000,
+                    "bank_balance": 0,
                     "last_daily": None,
-                    "total_earned": 0,
-                    "created_at": datetime.now().isoformat(),
-                    "last_active": datetime.now().isoformat()
-                }}
+                    "last_work": None,
+                    "total_earned": 0
+                }},
+                upsert=True
             )
             
-            # Remove from inventory
-            await db.db.inventory.delete_many({"user_id": member.id})
+            # Clear inventory
+            inventory_collection.delete_many({"user_id": str(member.id)})
             
             embed = discord.Embed(
                 title="✅ Economy Data Reset",
                 description=f"Reset all economy data for {member.mention}",
                 color=discord.Color.green()
             )
-        else:
+            await ctx.send(embed=embed)
+            
+            await self.log_mod_action("economy_reset", ctx.author, member, "Reset all economy data")
+            
+        except Exception as e:
+            logging.error(f"Error resetting economy data: {e}")
             embed = discord.Embed(
-                title="ℹ️ No Database Connection",
-                description="Cannot reset data without database connection.",
-                color=discord.Color.blue()
+                title="❌ Error",
+                description="An error occurred while resetting economy data.",
+                color=discord.Color.red()
             )
-        
-        await ctx.send(embed=embed)
-        await self.log_mod_action("economy_reset", ctx.author, member, "Reset all economy data")
+            await ctx.send(embed=embed)
 
     @commands.command(name="economystats", aliases=["estats", "astats"])
     async def economy_stats(self, ctx: commands.Context):
         """Admin: View economy system statistics."""
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
+        try:
+            users_collection = self.bot.database_manager.get_collection('users')
+            if not users_collection:
+                embed = discord.Embed(
+                    title="❌ Database Error",
+                    description="Database connection not available.",
+                    color=discord.Color.red()
+                )
+                return await ctx.send(embed=embed)
+            
+            # Get total users
+            total_users = users_collection.count_documents({})
+            
+            # Get total money in circulation
+            pipeline = [
+                {"$group": {
+                    "_id": None,
+                    "total_money": {"$sum": "$balance"},
+                    "total_bank": {"$sum": "$bank_balance"}
+                }}
+            ]
+            result = list(users_collection.aggregate(pipeline))
+            
+            total_money = result[0]['total_money'] + result[0]['total_bank'] if result else 0
+            
+            # Get richest user
+            richest_user_data = users_collection.find_one(sort=[("balance", -1)])
+            
             embed = discord.Embed(
-                title="❌ Economy System Unavailable",
-                description="Economy cog is not loaded.",
+                title="📊 Economy System Statistics",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            embed.add_field(name="👥 Total Users", value=total_users, inline=True)
+            embed.add_field(name="💰 Total Money in Circulation", value=f"${total_money:,}", inline=True)
+            
+            # Calculate average wealth
+            avg_wealth = total_money // total_users if total_users > 0 else 0
+            embed.add_field(name="📈 Average Wealth", value=f"${avg_wealth:,}", inline=True)
+            
+            # Richest user info
+            if richest_user_data:
+                richest_user_id = int(richest_user_data["user_id"])
+                richest_user = self.bot.get_user(richest_user_id)
+                richest_amount = richest_user_data["balance"] + richest_user_data.get("bank_balance", 0)
+                
+                richest_name = richest_user.display_name if richest_user else f"User {richest_user_id}"
+                embed.add_field(name="🏆 Richest User", value=f"{richest_name}\n${richest_amount:,}", inline=True)
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Error getting economy stats: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while retrieving economy statistics.",
                 color=discord.Color.red()
             )
-            return await ctx.send(embed=embed)
-        
-        # Get the database instance from economy cog
-        from economy import db
-        stats = await db.get_stats()
-        
-        embed = discord.Embed(
-            title="📊 Economy System Statistics",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        embed.add_field(name="👥 Total Users", value=stats['total_users'], inline=True)
-        embed.add_field(name="💰 Total Money in Circulation", value=f"{stats['total_money']:,}£", inline=True)
-        embed.add_field(name="📅 System Created", value=datetime.fromisoformat(stats['created_at']).strftime("%Y-%m-%d"), inline=True)
-        embed.add_field(name="💾 Last Save", value=datetime.fromisoformat(stats['last_save']).strftime("%H:%M:%S") if stats['last_save'] else "Never", inline=True)
-        
-        # Calculate average wealth
-        avg_wealth = stats['total_money'] // stats['total_users'] if stats['total_users'] > 0 else 0
-        embed.add_field(name="📈 Average Wealth", value=f"{avg_wealth:,}£", inline=True)
-        
-        # Find richest user
-        if db.connected and db.db:
-            richest_user = await db.db.users.find_one(sort=[("networth", -1)])
-            if richest_user:
-                richest_user_obj = self.bot.get_user(richest_user["user_id"])
-                richest_amount = richest_user["wallet"] + richest_user["bank"]
-                embed.add_field(name="🏆 Richest User", value=f"{richest_user_obj.display_name if richest_user_obj else 'Unknown'}\n{richest_amount:,}£", inline=True)
-        
-        await ctx.send(embed=embed)
+            await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
