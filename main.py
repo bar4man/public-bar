@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 import webserver
 import aiofiles
 import sys
+import traceback
 
 # Fix module import issue
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -679,28 +680,44 @@ async def load_cogs():
         if os.path.exists("markets"):
             logging.info("📁 Markets folder found, attempting to load...")
             
+            # Debug: List files in markets folder
+            market_files = os.listdir("markets")
+            logging.info(f"📂 Markets folder contents: {market_files}")
+            
             # Import and add the cog manually
             from markets.market_cog import MarketCog
+            logging.info("✅ MarketCog imported successfully")
+            
             market_cog = MarketCog(bot)
+            logging.info("✅ MarketCog instance created")
+            
             await bot.add_cog(market_cog)
-            logging.info("✅ Loaded cog: markets")
+            logging.info("✅ MarketCog added to bot")
+            
+            # Debug: Check what commands are registered
+            market_commands = [cmd.name for cmd in market_cog.get_commands()]
+            logging.info(f"📝 Market commands registered: {market_commands}")
+            
             loaded_count += 1
         else:
             logging.warning("⚠️ Markets folder not found, skipping markets cog")
-            # List current directory to debug
-            current_files = os.listdir(".")
-            logging.info(f"📂 Current directory contents: {current_files}")
             
     except ImportError as e:
         logging.error(f"❌ Import error loading markets cog: {e}")
-        # Debug what's in the markets folder
-        if os.path.exists("markets"):
-            market_files = os.listdir("markets")
-            logging.info(f"📂 Markets folder contents: {market_files}")
     except Exception as e:
         logging.error(f"❌ Unexpected error loading markets cog: {e}")
+        logging.error(f"❌ Full traceback: {traceback.format_exc()}")
     
-    logging.info(f"📊 Cogs loaded: {loaded_count}/3")
+    # Test cog
+    try:
+        from test_cog import TestCog
+        await bot.add_cog(TestCog(bot))
+        logging.info("✅ Test cog loaded")
+        loaded_count += 1
+    except Exception as e:
+        logging.error(f"❌ Test cog failed: {e}")
+    
+    logging.info(f"📊 Cogs loaded: {loaded_count}/4")
 
 async def reload_cogs():
     """Reload all cogs."""
@@ -727,6 +744,18 @@ async def reload_cogs():
             logging.info("🔄 Reloaded cog: markets")
     except Exception as e:
         logging.error(f"❌ Failed to reload markets cog: {e}")
+    
+    # Handle test cog
+    try:
+        existing_test_cog = bot.get_cog("TestCog")
+        if existing_test_cog:
+            await bot.remove_cog("TestCog")
+        
+        from test_cog import TestCog
+        await bot.add_cog(TestCog(bot))
+        logging.info("🔄 Reloaded cog: test")
+    except Exception as e:
+        logging.error(f"❌ Failed to reload test cog: {e}")
 
 # ---------------- Bot Events ----------------
 @bot.event
