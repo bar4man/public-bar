@@ -7,7 +7,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 import aiofiles
-# from economy import db  # Added missing import
 
 class Admin(commands.Cog):
     """Enhanced administrative commands for bot management and moderation."""
@@ -641,6 +640,7 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
+        # FIX: await the coroutine
         await economy_cog.update_balance(member.id, wallet_change=amount)
         
         embed = discord.Embed(
@@ -665,8 +665,10 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
-        user_data = economy_cog.get_user(member.id)
-        taken = min(amount, user_data["wallet"])
+        # FIX: await the coroutine and then access the data
+        user_data = await economy_cog.get_user(member.id)  # Add await here
+        taken = min(amount, user_data["wallet"])  # Now user_data is a dict, not a coroutine
+        
         await economy_cog.update_balance(member.id, wallet_change=-taken)
         
         embed = discord.Embed(
@@ -706,7 +708,8 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
-        user_data = economy_cog.get_user(member.id)
+        # FIX: await the coroutine
+        user_data = await economy_cog.get_user(member.id)  # Add await here
         
         wallet_change = 0
         bank_change = 0
@@ -747,28 +750,30 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
+        # Get the database instance from economy cog
+        from economy import db
+        
         # Reset user data
         user_id_str = str(member.id)
-        if user_id_str in economy_cog.data['users']:
-            # Reset to default values but keep user entry
-            economy_cog.data['users'][user_id_str] = {
-                "wallet": 100,
-                "bank": 0,
-                "bank_limit": 5000,
-                "networth": 100,
-                "daily_streak": 0,
-                "last_daily": None,
-                "total_earned": 0,
-                "created_at": datetime.now().isoformat(),
-                "last_active": datetime.now().isoformat()
-            }
+        if db.connected and db.db:
+            # Reset in MongoDB
+            await db.db.users.update_one(
+                {"user_id": member.id},
+                {"$set": {
+                    "wallet": 100,
+                    "bank": 0,
+                    "bank_limit": 5000,
+                    "networth": 100,
+                    "daily_streak": 0,
+                    "last_daily": None,
+                    "total_earned": 0,
+                    "created_at": datetime.now().isoformat(),
+                    "last_active": datetime.now().isoformat()
+                }}
+            )
             
             # Remove from inventory
-            if user_id_str in economy_cog.data['inventory']:
-                del economy_cog.data['inventory'][user_id_str]
-            
-            # Save changes
-            await economy_cog.save_data()
+            await db.db.inventory.delete_many({"user_id": member.id})
             
             embed = discord.Embed(
                 title="✅ Economy Data Reset",
@@ -777,8 +782,8 @@ class Admin(commands.Cog):
             )
         else:
             embed = discord.Embed(
-                title="ℹ️ No Data Found",
-                description=f"{member.mention} has no economy data to reset.",
+                title="ℹ️ No Database Connection",
+                description="Cannot reset data without database connection.",
                 color=discord.Color.blue()
             )
         
@@ -797,7 +802,9 @@ class Admin(commands.Cog):
             )
             return await ctx.send(embed=embed)
         
-        stats = db.get_stats(economy_cog.data)
+        # Get the database instance from economy cog
+        from economy import db
+        stats = await db.get_stats()
         
         embed = discord.Embed(
             title="📊 Economy System Statistics",
@@ -815,13 +822,12 @@ class Admin(commands.Cog):
         embed.add_field(name="📈 Average Wealth", value=f"{avg_wealth:,}£", inline=True)
         
         # Find richest user
-        users_data = economy_cog.data['users']
-        if users_data:
-            richest_user_id = max(users_data.keys(), 
-                                key=lambda uid: users_data[uid].get("wallet", 0) + users_data[uid].get("bank", 0))
-            richest_user = self.bot.get_user(int(richest_user_id))
-            richest_amount = users_data[richest_user_id]["wallet"] + users_data[richest_user_id]["bank"]
-            embed.add_field(name="🏆 Richest User", value=f"{richest_user.display_name if richest_user else 'Unknown'}\n{richest_amount:,}£", inline=True)
+        if db.connected and db.db:
+            richest_user = await db.db.users.find_one(sort=[("networth", -1)])
+            if richest_user:
+                richest_user_obj = self.bot.get_user(richest_user["user_id"])
+                richest_amount = richest_user["wallet"] + richest_user["bank"]
+                embed.add_field(name="🏆 Richest User", value=f"{richest_user_obj.display_name if richest_user_obj else 'Unknown'}\n{richest_amount:,}£", inline=True)
         
         await ctx.send(embed=embed)
 
