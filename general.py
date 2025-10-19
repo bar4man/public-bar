@@ -50,10 +50,7 @@ class General(commands.Cog):
             return await ctx.send(embed=embed, delete_after=5)
         
         try:
-            # Delete the command message first
             await ctx.message.delete()
-            
-            # Delete the specified amount of messages
             deleted = await ctx.channel.purge(limit=amount)
             
             embed = discord.Embed(
@@ -63,9 +60,7 @@ class General(commands.Cog):
             )
             embed.set_footer(text=f"Cleared by {ctx.author.name}")
             
-            # Send confirmation and delete after 5 seconds
             await ctx.send(embed=embed, delete_after=5)
-            
             logger.info(f"{ctx.author} cleared {len(deleted)} messages in #{ctx.channel.name}")
             
         except discord.Forbidden:
@@ -93,20 +88,16 @@ class General(commands.Cog):
         """
         guild = ctx.guild
         
-        # Get member counts
         total_members = guild.member_count
         bots = len([m for m in guild.members if m.bot])
         humans = total_members - bots
         
-        # Get channel counts
         text_channels = len(guild.text_channels)
         voice_channels = len(guild.voice_channels)
         categories = len(guild.categories)
         
-        # Get role count
-        roles = len(guild.roles) - 1  # Exclude @everyone
+        roles = len(guild.roles) - 1
         
-        # Server boost info
         boost_level = guild.premium_tier
         boost_count = guild.premium_subscription_count
         
@@ -116,11 +107,9 @@ class General(commands.Cog):
             timestamp=datetime.utcnow()
         )
         
-        # Set server icon
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
         
-        # Server info
         embed.add_field(
             name="🆔 Server ID",
             value=f"`{guild.id}`",
@@ -139,28 +128,24 @@ class General(commands.Cog):
             inline=True
         )
         
-        # Member stats
         embed.add_field(
             name="👥 Members",
             value=f"Total: **{total_members}**\nHumans: **{humans}**\nBots: **{bots}**",
             inline=True
         )
         
-        # Channel stats
         embed.add_field(
             name="📁 Channels",
             value=f"Categories: **{categories}**\nText: **{text_channels}**\nVoice: **{voice_channels}**",
             inline=True
         )
         
-        # Other stats
         embed.add_field(
             name="🎭 Roles",
             value=f"**{roles}** roles",
             inline=True
         )
         
-        # Boost info
         if boost_count > 0:
             embed.add_field(
                 name="✨ Server Boost",
@@ -168,7 +153,6 @@ class General(commands.Cog):
                 inline=True
             )
         
-        # Verification level
         verification_levels = {
             discord.VerificationLevel.none: "None",
             discord.VerificationLevel.low: "Low",
@@ -195,11 +179,9 @@ class General(commands.Cog):
         """
         member = member or ctx.author
         
-        # Get roles (excluding @everyone)
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
         roles_display = ", ".join(roles) if roles else "None"
         
-        # Trim if too long
         if len(roles_display) > 1024:
             roles_display = roles_display[:1021] + "..."
         
@@ -211,7 +193,6 @@ class General(commands.Cog):
         
         embed.set_thumbnail(url=member.display_avatar.url)
         
-        # Basic info
         embed.add_field(
             name="📛 Username",
             value=f"{member.name}",
@@ -230,7 +211,6 @@ class General(commands.Cog):
             inline=True
         )
         
-        # Dates
         embed.add_field(
             name="📅 Account Created",
             value=member.created_at.strftime("%b %d, %Y"),
@@ -243,7 +223,6 @@ class General(commands.Cog):
             inline=True
         )
         
-        # Status
         status_emojis = {
             discord.Status.online: "🟢 Online",
             discord.Status.idle: "🟡 Idle",
@@ -256,14 +235,12 @@ class General(commands.Cog):
             inline=True
         )
         
-        # Roles
         embed.add_field(
             name=f"🎭 Roles ({len(roles)})",
             value=roles_display,
             inline=False
         )
         
-        # Permissions
         if member.guild_permissions.administrator:
             embed.add_field(
                 name="⚡ Key Permissions",
@@ -306,7 +283,6 @@ class General(commands.Cog):
         
         Usage: !invite
         """
-        # Generate invite URL with necessary permissions
         permissions = discord.Permissions(
             manage_messages=True,
             read_messages=True,
