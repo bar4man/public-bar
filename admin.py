@@ -19,8 +19,10 @@ class Admin(commands.Cog):
     
     def _initialize_mod_logs(self):
         """Initialize moderation logs file."""
-        if not os.path.exists("mod_logs.json"):
-            with open("mod_logs.json", "w") as f:
+        if not os.path.exists("data"):
+            os.makedirs("data", exist_ok=True)
+        if not os.path.exists("data/mod_logs.json"):
+            with open("data/mod_logs.json", "w") as f:
                 json.dump({}, f, indent=2)
     
     # -------------------- Permission System --------------------
@@ -62,7 +64,7 @@ class Admin(commands.Cog):
         
         # Save to file
         try:
-            async with aiofiles.open("mod_logs.json", "r") as f:
+            async with aiofiles.open("data/mod_logs.json", "r") as f:
                 content = await f.read()
                 logs = json.loads(content) if content else {}
         except (FileNotFoundError, json.JSONDecodeError):
@@ -78,7 +80,7 @@ class Admin(commands.Cog):
         if len(logs[guild_id]) > 1000:
             logs[guild_id] = logs[guild_id][-1000:]
         
-        async with aiofiles.open("mod_logs.json", "w") as f:
+        async with aiofiles.open("data/mod_logs.json", "w") as f:
             await f.write(json.dumps(logs, indent=2))
         
         # Send to log channel if set
@@ -569,16 +571,17 @@ class Admin(commands.Cog):
     async def reload_cogs(self, ctx: commands.Context):
         """Reload all bot cogs."""
         try:
-            cogs = ["cogs.admin", "cogs.economy", "cogs.market"]
+            # Get all loaded cogs
+            loaded_cogs = list(self.bot.extensions.keys())
             reloaded = []
             failed = []
             
-            for cog in cogs:
+            for cog in loaded_cogs:
                 try:
                     await self.bot.reload_extension(cog)
-                    reloaded.append(cog.replace("cogs.", ""))
+                    reloaded.append(cog)
                 except Exception as e:
-                    failed.append(f"{cog.replace('cogs.', '')}: {str(e)}")
+                    failed.append(f"{cog}: {str(e)}")
             
             embed = discord.Embed(
                 title="🔄 Cog Reload Results",
@@ -586,7 +589,7 @@ class Admin(commands.Cog):
             )
             
             if reloaded:
-                embed.add_field(name="✅ Reloaded", value=", ".join(reloaded), inline=False)
+                embed.add_field(name="✅ Reloaded", value="\n".join(reloaded), inline=False)
             if failed:
                 embed.add_field(name="❌ Failed", value="\n".join(failed), inline=False)
             
@@ -631,15 +634,6 @@ class Admin(commands.Cog):
     @commands.command(name="economygive", aliases=["egive", "agive"])
     async def economy_give(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin: Give money to a user's wallet."""
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
-            embed = discord.Embed(
-                title="❌ Economy System Unavailable",
-                description="Economy cog is not loaded.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
         if amount <= 0:
             embed = discord.Embed(
                 title="❌ Invalid Amount",
@@ -660,7 +654,7 @@ class Admin(commands.Cog):
                 return await ctx.send(embed=embed)
             
             # Update user balance
-            result = users_collection.update_one(
+            result = await users_collection.update_one(
                 {"user_id": str(member.id)},
                 {"$inc": {"balance": amount}},
                 upsert=True
@@ -688,15 +682,6 @@ class Admin(commands.Cog):
     @commands.command(name="economytake", aliases=["etake", "atake"])
     async def economy_take(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin: Take money from a user's wallet."""
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
-            embed = discord.Embed(
-                title="❌ Economy System Unavailable",
-                description="Economy cog is not loaded.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
         if amount <= 0:
             embed = discord.Embed(
                 title="❌ Invalid Amount",
@@ -717,7 +702,7 @@ class Admin(commands.Cog):
                 return await ctx.send(embed=embed)
             
             # Get current balance
-            user_data = users_collection.find_one({"user_id": str(member.id)})
+            user_data = await users_collection.find_one({"user_id": str(member.id)})
             current_balance = user_data.get('balance', 1000) if user_data else 1000
             
             # Calculate how much we can actually take
@@ -725,7 +710,7 @@ class Admin(commands.Cog):
             
             if taken > 0:
                 # Update user balance
-                users_collection.update_one(
+                await users_collection.update_one(
                     {"user_id": str(member.id)},
                     {"$inc": {"balance": -taken}},
                     upsert=True
@@ -787,7 +772,7 @@ class Admin(commands.Cog):
                 return await ctx.send(embed=embed)
             
             # Get current user data
-            user_data = users_collection.find_one({"user_id": str(member.id)})
+            user_data = await users_collection.find_one({"user_id": str(member.id)})
             
             update_data = {}
             if wallet is not None:
@@ -796,7 +781,7 @@ class Admin(commands.Cog):
                 update_data["bank_balance"] = bank
             
             # Update user data
-            users_collection.update_one(
+            await users_collection.update_one(
                 {"user_id": str(member.id)},
                 {"$set": update_data},
                 upsert=True
@@ -843,7 +828,7 @@ class Admin(commands.Cog):
                 return await ctx.send(embed=embed)
             
             # Reset user data
-            users_collection.update_one(
+            await users_collection.update_one(
                 {"user_id": str(member.id)},
                 {"$set": {
                     "balance": 1000,
@@ -856,7 +841,7 @@ class Admin(commands.Cog):
             )
             
             # Clear inventory
-            inventory_collection.delete_many({"user_id": str(member.id)})
+            await inventory_collection.delete_many({"user_id": str(member.id)})
             
             embed = discord.Embed(
                 title="✅ Economy Data Reset",
@@ -890,7 +875,7 @@ class Admin(commands.Cog):
                 return await ctx.send(embed=embed)
             
             # Get total users
-            total_users = users_collection.count_documents({})
+            total_users = await users_collection.count_documents({})
             
             # Get total money in circulation
             pipeline = [
@@ -900,12 +885,12 @@ class Admin(commands.Cog):
                     "total_bank": {"$sum": "$bank_balance"}
                 }}
             ]
-            result = list(users_collection.aggregate(pipeline))
+            result = await users_collection.aggregate(pipeline).to_list(length=1)
             
             total_money = result[0]['total_money'] + result[0]['total_bank'] if result else 0
             
             # Get richest user
-            richest_user_data = users_collection.find_one(sort=[("balance", -1)])
+            richest_user_data = await users_collection.find_one(sort=[("balance", -1)])
             
             embed = discord.Embed(
                 title="📊 Economy System Statistics",
@@ -922,12 +907,11 @@ class Admin(commands.Cog):
             
             # Richest user info
             if richest_user_data:
-                richest_user_id = int(richest_user_data["user_id"])
+                richest_user_id = int(richest_user_data['user_id'])
                 richest_user = self.bot.get_user(richest_user_id)
-                richest_amount = richest_user_data["balance"] + richest_user_data.get("bank_balance", 0)
-                
-                richest_name = richest_user.display_name if richest_user else f"User {richest_user_id}"
-                embed.add_field(name="🏆 Richest User", value=f"{richest_name}\n${richest_amount:,}", inline=True)
+                richest_name = richest_user.name if richest_user else f"User {richest_user_id}"
+                richest_balance = richest_user_data.get('balance', 0)
+                embed.add_field(name="👑 Richest User", value=f"{richest_name}: ${richest_balance:,}", inline=False)
             
             await ctx.send(embed=embed)
             
@@ -941,4 +925,5 @@ class Admin(commands.Cog):
             await ctx.send(embed=embed)
 
 async def setup(bot):
+    """Setup function for the Admin cog."""
     await bot.add_cog(Admin(bot))
