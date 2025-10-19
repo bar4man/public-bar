@@ -51,12 +51,14 @@ class Economy(commands.Cog):
         
         # Start background tasks
         self.cleanup_cooldowns.start()
+        logging.info("✅ Economy system initialized")
     
     def cog_unload(self):
         """Cleanup when cog is unloaded."""
         self.cleanup_cooldowns.cancel()
+        logging.info("Economy system unloaded")
     
-    # -------------------- Utility Methods --------------------
+    # -------------------- Database Methods --------------------
     async def get_user_data(self, user_id: int) -> Dict:
         """Get user data from MongoDB."""
         try:
@@ -64,13 +66,28 @@ class Economy(commands.Cog):
             if not users_collection:
                 return self._get_default_user_data(user_id)
             
-            user_data = await users_collection.find_one({"user_id": str(user_id)})
+            user_data = users_collection.find_one({"user_id": str(user_id)})
             if not user_data:
-                return self._get_default_user_data(user_id)
+                # Create new user if doesn't exist
+                return await self.create_user(user_id)
             
             return user_data
         except Exception as e:
             logging.error(f"Error getting user data for {user_id}: {e}")
+            return self._get_default_user_data(user_id)
+    
+    async def create_user(self, user_id: int) -> Dict:
+        """Create a new user in the database."""
+        try:
+            users_collection = self.bot.database_manager.get_collection('users')
+            if not users_collection:
+                return self._get_default_user_data(user_id)
+            
+            user_data = self._get_default_user_data(user_id)
+            users_collection.insert_one(user_data.copy())  # Insert copy to avoid modifying original
+            return user_data
+        except Exception as e:
+            logging.error(f"Error creating user {user_id}: {e}")
             return self._get_default_user_data(user_id)
     
     def _get_default_user_data(self, user_id: int) -> Dict:
@@ -83,41 +100,51 @@ class Economy(commands.Cog):
             "last_work": None,
             "last_crime": None,
             "total_earned": 0,
-            "inventory": []
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
     
-    async def update_user_data(self, user_id: int, update_data: Dict):
+    async def update_user_data(self, user_id: int, update_data: Dict) -> bool:
         """Update user data in MongoDB."""
         try:
             users_collection = self.bot.database_manager.get_collection('users')
             if not users_collection:
                 return False
             
-            await users_collection.update_one(
+            # Ensure updated_at is always set
+            if "$set" in update_data:
+                update_data["$set"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            else:
+                update_data["$set"] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+            
+            result = users_collection.update_one(
                 {"user_id": str(user_id)},
-                {"$set": update_data},
+                update_data,
                 upsert=True
             )
-            return True
+            return result.modified_count > 0 or result.upserted_id is not None
         except Exception as e:
             logging.error(f"Error updating user data for {user_id}: {e}")
             return False
     
-    async def add_to_inventory(self, user_id: int, item_id: int, quantity: int = 1):
+    async def add_to_inventory(self, user_id: int, item_id: int, quantity: int = 1) -> bool:
         """Add item to user's inventory."""
         try:
             inventory_collection = self.bot.database_manager.get_collection('inventory')
             if not inventory_collection:
                 return False
             
-            await inventory_collection.update_one(
+            result = inventory_collection.update_one(
                 {"user_id": str(user_id), "item_id": item_id},
-                {"$inc": {"quantity": quantity}},
+                {
+                    "$inc": {"quantity": quantity},
+                    "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
+                },
                 upsert=True
             )
-            return True
+            return result.modified_count > 0 or result.upserted_id is not None
         except Exception as e:
-            logging.error(f"Error adding to inventory for {user_id}: {e}")
+            logging.error(f"Error adding to inventory for user {user_id}: {e}")
             return False
     
     async def get_inventory(self, user_id: int) -> List[Dict]:
@@ -128,15 +155,29 @@ class Economy(commands.Cog):
                 return []
             
             cursor = inventory_collection.find({"user_id": str(user_id)})
-            inventory = await cursor.to_list(length=None)
+            inventory = list(cursor)
             return inventory
         except Exception as e:
-            logging.error(f"Error getting inventory for {user_id}: {e}")
+            logging.error(f"Error getting inventory for user {user_id}: {e}")
             return []
     
+    # -------------------- Utility Methods --------------------
     def format_money(self, amount: int) -> str:
         """Format money with commas."""
         return f"${amount:,}"
+    
+    def format_time(self, seconds: float) -> str:
+        """Format seconds into readable time."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            minutes = int(seconds // 60)
+            seconds_remaining = int(seconds % 60)
+            return f"{minutes}m {seconds_remaining}s"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours}h {minutes}m"
     
     def is_on_cooldown(self, user_id: int, action: str, cooldown_seconds: int) -> Tuple[bool, Optional[timedelta]]:
         """Check if user is on cooldown for an action."""
@@ -165,25 +206,29 @@ class Economy(commands.Cog):
     @tasks.loop(hours=1)
     async def cleanup_cooldowns(self):
         """Clean up old cooldowns to prevent memory leaks."""
-        current_time = datetime.now(timezone.utc)
-        expired_users = []
-        
-        for user_id, cooldowns in self.cooldowns.items():
-            # Remove expired cooldowns (older than 24 hours)
-            expired_actions = []
-            for action, last_used in cooldowns.items():
-                if (current_time - last_used).total_seconds() > 86400:  # 24 hours
-                    expired_actions.append(action)
+        try:
+            current_time = datetime.now(timezone.utc)
+            expired_users = []
             
-            for action in expired_actions:
-                del cooldowns[action]
+            for user_id, cooldowns in self.cooldowns.items():
+                # Remove expired cooldowns (older than 24 hours)
+                expired_actions = []
+                for action, last_used in cooldowns.items():
+                    if (current_time - last_used).total_seconds() > 86400:  # 24 hours
+                        expired_actions.append(action)
+                
+                for action in expired_actions:
+                    del cooldowns[action]
+                
+                # Remove user if no cooldowns left
+                if not cooldowns:
+                    expired_users.append(user_id)
             
-            # Remove user if no cooldowns left
-            if not cooldowns:
-                expired_users.append(user_id)
-        
-        for user_id in expired_users:
-            del self.cooldowns[user_id]
+            for user_id in expired_users:
+                del self.cooldowns[user_id]
+                
+        except Exception as e:
+            logging.error(f"Error in cleanup_cooldowns: {e}")
     
     # -------------------- Balance Commands --------------------
     @commands.command(name="balance", aliases=["bal", "money"])
@@ -192,53 +237,80 @@ class Economy(commands.Cog):
         member = member or ctx.author
         user_data = await self.get_user_data(member.id)
         
+        wallet = user_data.get('balance', 1000)
+        bank = user_data.get('bank_balance', 0)
+        total = wallet + bank
+        
         embed = discord.Embed(
             title=f"💰 {member.display_name}'s Balance",
-            color=discord.Color.gold()
+            color=discord.Color.gold(),
+            timestamp=datetime.now(timezone.utc)
         )
         
         embed.add_field(
             name="💵 Wallet",
-            value=self.format_money(user_data.get('balance', 1000)),
+            value=self.format_money(wallet),
             inline=True
         )
         embed.add_field(
             name="🏦 Bank",
-            value=self.format_money(user_data.get('bank_balance', 0)),
+            value=self.format_money(bank),
             inline=True
         )
         embed.add_field(
-            name="📈 Net Worth",
-            value=self.format_money(user_data.get('balance', 1000) + user_data.get('bank_balance', 0)),
+            name="📈 Total",
+            value=f"**{self.format_money(total)}**",
             inline=True
         )
         
+        # Wealth tier
+        if total >= 1000000:
+            tier = "👑 Emperor"
+            embed.color = discord.Color.gold()
+        elif total >= 500000:
+            tier = "💎 Tycoon"
+            embed.color = discord.Color.purple()
+        elif total >= 100000:
+            tier = "🏦 Millionaire" 
+            embed.color = discord.Color.blue()
+        elif total >= 50000:
+            tier = "💵 Wealthy"
+            embed.color = discord.Color.green()
+        elif total >= 10000:
+            tier = "🪙 Stable"
+            embed.color = discord.Color.green()
+        else:
+            tier = "🌱 Starting"
+            embed.color = discord.Color.light_grey()
+        
+        embed.add_field(name="🏆 Wealth Tier", value=tier, inline=False)
         embed.set_thumbnail(url=member.display_avatar.url)
+        
+        # Show database status in footer
+        db_status = "✅ MongoDB" if self.bot.database_manager.is_connected else "⚠️ Local"
+        embed.set_footer(text=f"Economy System | {db_status}")
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="dailies", aliases=["daily"])
+    @commands.command(name="daily")
     async def daily(self, ctx: commands.Context):
         """Claim your daily reward."""
         user_id = ctx.author.id
         
-        # Check cooldown
-        on_cooldown, time_left = self.is_on_cooldown(user_id, "daily", 86400)  # 24 hours
+        # Check cooldown (24 hours)
+        on_cooldown, time_left = self.is_on_cooldown(user_id, "daily", 86400)
         if on_cooldown:
-            hours = int(time_left.total_seconds() // 3600)
-            minutes = int((time_left.total_seconds() % 3600) // 60)
-            
             embed = discord.Embed(
-                title="⏰ Daily Cooldown",
-                description=f"You can claim your daily reward again in **{hours}h {minutes}m**.",
+                title="⏰ Daily Already Claimed",
+                description=f"You can claim your daily reward again in **{self.format_time(time_left.total_seconds())}**",
                 color=discord.Color.orange()
             )
             return await ctx.send(embed=embed)
         
-        # Calculate daily reward (base + bonus)
-        base_reward = 500
-        streak_bonus = random.randint(50, 200)
-        total_reward = base_reward + streak_bonus
+        # Calculate reward with random bonus
+        base_reward = random.randint(500, 1000)
+        bonus = random.randint(0, 200)  # Random bonus
+        total_reward = base_reward + bonus
         
         # Update user balance
         user_data = await self.get_user_data(user_id)
@@ -265,11 +337,16 @@ class Economy(commands.Cog):
         embed = discord.Embed(
             title="🎁 Daily Reward Claimed!",
             description=f"You received **{self.format_money(total_reward)}**!",
-            color=discord.Color.green()
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Base Reward", value=self.format_money(base_reward), inline=True)
-        embed.add_field(name="Bonus", value=self.format_money(streak_bonus), inline=True)
-        embed.add_field(name="New Balance", value=self.format_money(new_balance), inline=True)
+        
+        if bonus > 0:
+            embed.add_field(name="Base Reward", value=self.format_money(base_reward), inline=True)
+            embed.add_field(name="Bonus", value=self.format_money(bonus), inline=True)
+        
+        embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=False)
+        embed.set_footer(text="Come back in 24 hours for your next reward!")
         
         await ctx.send(embed=embed)
     
@@ -282,12 +359,9 @@ class Economy(commands.Cog):
         # Check cooldown (1 hour)
         on_cooldown, time_left = self.is_on_cooldown(user_id, "work", 3600)
         if on_cooldown:
-            minutes = int(time_left.total_seconds() // 60)
-            seconds = int(time_left.total_seconds() % 60)
-            
             embed = discord.Embed(
-                title="⏰ Work Cooldown",
-                description=f"You can work again in **{minutes}m {seconds}s**.",
+                title="⏰ Already Worked Recently",
+                description=f"You can work again in **{self.format_time(time_left.total_seconds())}**",
                 color=discord.Color.orange()
             )
             return await ctx.send(embed=embed)
@@ -295,7 +369,15 @@ class Economy(commands.Cog):
         # Calculate work reward
         job = random.choice(self.work_jobs)
         base_earnings = random.randint(100, 300)
-        bonus = random.randint(0, 100)  # Random bonus
+        
+        # Critical work chance (10%)
+        is_critical = random.random() < 0.1
+        if is_critical:
+            base_earnings *= 2
+            bonus = random.randint(50, 100)
+        else:
+            bonus = random.randint(0, 50)
+        
         total_earnings = base_earnings + bonus
         
         # Update user balance
@@ -321,14 +403,19 @@ class Economy(commands.Cog):
         self.set_cooldown(user_id, "work")
         
         embed = discord.Embed(
-            title="💼 Work Completed",
-            description=f"You {job} and earned **{self.format_money(total_earnings)}**!",
-            color=discord.Color.blue()
+            title="💼 Work Complete!",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Base Earnings", value=self.format_money(base_earnings), inline=True)
-        if bonus > 0:
-            embed.add_field(name="Bonus", value=self.format_money(bonus), inline=True)
-        embed.add_field(name="New Balance", value=self.format_money(new_balance), inline=True)
+        
+        if is_critical:
+            embed.description = f"🎯 **CRITICAL WORK!** You {job} and earned {self.format_money(total_earnings)}!"
+            embed.color = discord.Color.gold()
+        else:
+            embed.description = f"You {job} and earned {self.format_money(total_earnings)}!"
+        
+        embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=False)
+        embed.set_footer(text="You can work again in 1 hour!")
         
         await ctx.send(embed=embed)
     
@@ -341,12 +428,9 @@ class Economy(commands.Cog):
         # Check cooldown (2 hours)
         on_cooldown, time_left = self.is_on_cooldown(user_id, "crime", 7200)
         if on_cooldown:
-            hours = int(time_left.total_seconds() // 3600)
-            minutes = int((time_left.total_seconds() % 3600) // 60)
-            
             embed = discord.Embed(
                 title="⏰ Crime Cooldown",
-                description=f"You can attempt another crime in **{hours}h {minutes}m**.",
+                description=f"You can attempt another crime in **{self.format_time(time_left.total_seconds())}**",
                 color=discord.Color.orange()
             )
             return await ctx.send(embed=embed)
@@ -355,8 +439,8 @@ class Economy(commands.Cog):
         crime_name, min_reward, max_reward = random.choice(self.crime_activities)
         success_chance = random.randint(1, 100)
         
-        # Determine outcome
-        if success_chance <= 60:  # 60% success rate
+        # Determine outcome (60% success rate)
+        if success_chance <= 60:
             # Success
             earnings = random.randint(min_reward, max_reward)
             
@@ -381,9 +465,10 @@ class Economy(commands.Cog):
             embed = discord.Embed(
                 title="🎭 Crime Successful!",
                 description=f"You successfully {crime_name} and earned **{self.format_money(earnings)}**!",
-                color=discord.Color.green()
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc)
             )
-            embed.add_field(name="New Balance", value=self.format_money(new_balance), inline=True)
+            embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=True)
             
         else:
             # Failure - fine the user
@@ -403,13 +488,14 @@ class Economy(commands.Cog):
             embed = discord.Embed(
                 title="🚨 Crime Failed!",
                 description=f"You got caught trying to {crime_name}!",
-                color=discord.Color.red()
+                color=discord.Color.red(),
+                timestamp=datetime.now(timezone.utc)
             )
             if actual_fine > 0:
-                embed.add_field(name="Fine Paid", value=self.format_money(actual_fine), inline=True)
-                embed.add_field(name="New Balance", value=self.format_money(new_balance), inline=True)
+                embed.add_field(name="💸 Fine Paid", value=self.format_money(actual_fine), inline=True)
+                embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=True)
             else:
-                embed.add_field(name="Lucky Break", value="You had no money to fine!", inline=True)
+                embed.add_field(name="🎉 Lucky Break", value="You had no money to fine!", inline=True)
         
         # Set cooldown regardless of outcome
         self.set_cooldown(user_id, "crime")
@@ -492,7 +578,8 @@ class Economy(commands.Cog):
         embed = discord.Embed(
             title="🏦 Deposit Successful",
             description=f"Deposited **{self.format_money(deposit_amount)}** into your bank account.",
-            color=discord.Color.green()
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="💵 New Wallet", value=self.format_money(new_wallet), inline=True)
         embed.add_field(name="🏦 New Bank", value=self.format_money(new_bank), inline=True)
@@ -574,7 +661,8 @@ class Economy(commands.Cog):
         embed = discord.Embed(
             title="🏦 Withdrawal Successful",
             description=f"Withdrew **{self.format_money(withdraw_amount)}** from your bank account.",
-            color=discord.Color.green()
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="💵 New Wallet", value=self.format_money(new_wallet), inline=True)
         embed.add_field(name="🏦 New Bank", value=self.format_money(new_bank), inline=True)
@@ -582,7 +670,7 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
     
     # -------------------- Transfer System --------------------
-    @commands.command(name="transfer", aliases=["pay"])
+    @commands.command(name="transfer", aliases=["pay", "give"])
     async def transfer(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Transfer money to another user."""
         if member == ctx.author:
@@ -650,7 +738,8 @@ class Economy(commands.Cog):
         embed = discord.Embed(
             title="✅ Transfer Successful",
             description=f"You transferred **{self.format_money(amount)}** to {member.mention}.",
-            color=discord.Color.green()
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
         )
         embed.add_field(name="Your New Balance", value=self.format_money(new_sender_balance), inline=True)
         embed.add_field(name=f"{member.display_name}'s Balance", value=self.format_money(new_receiver_balance), inline=True)
@@ -677,19 +766,20 @@ class Economy(commands.Cog):
         page_items = self.shop_items[start_idx:end_idx]
         
         embed = discord.Embed(
-            title="🛍️ Shop",
-            description="Use `!buy <item_id>` to purchase an item.",
-            color=discord.Color.blue()
+            title="🛍️ Economy Shop",
+            description="Use `~~buy <item_id> [quantity]` to purchase an item.",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
         )
         
         for item in page_items:
             embed.add_field(
-                name=f"{item['name']} (ID: {item['id']}) - {self.format_money(item['price'])}",
-                value=f"{item['description']} [{item['type'].title()}]",
+                name=f"{item['name']} - {self.format_money(item['price'])}",
+                value=f"**ID:** `{item['id']}`\n{item['description']} [{item['type'].title()}]",
                 inline=False
             )
         
-        embed.set_footer(text=f"Page {page}/{total_pages} • Use !shop <page> to browse more")
+        embed.set_footer(text=f"Page {page}/{total_pages} • Use ~~shop <page> to browse more")
         
         await ctx.send(embed=embed)
     
@@ -699,7 +789,7 @@ class Economy(commands.Cog):
         if item_id is None:
             embed = discord.Embed(
                 title="❌ Specify Item",
-                description="Please specify an item ID to buy. Use `!shop` to see available items.",
+                description="Please specify an item ID to buy. Use `~~shop` to see available items.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
@@ -717,7 +807,7 @@ class Economy(commands.Cog):
         if not item:
             embed = discord.Embed(
                 title="❌ Item Not Found",
-                description=f"No item found with ID {item_id}. Use `!shop` to see available items.",
+                description=f"No item found with ID {item_id}. Use `~~shop` to see available items.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
@@ -758,50 +848,47 @@ class Economy(commands.Cog):
         embed = discord.Embed(
             title="✅ Purchase Successful!",
             description=f"You bought {quantity}x {item['name']} for {self.format_money(total_cost)}.",
-            color=discord.Color.green()
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="New Balance", value=self.format_money(new_balance), inline=True)
-        embed.add_field(name="Item Type", value=item['type'].title(), inline=True)
+        embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=True)
+        embed.add_field(name="📦 Item Type", value=item['type'].title(), inline=True)
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="inventory", aliases=["inv"])
+    @commands.command(name="inventory", aliases=["inv", "items"])
     async def inventory(self, ctx: commands.Context, member: discord.Member = None):
         """View your or another user's inventory."""
         member = member or ctx.author
         inventory = await self.get_inventory(member.id)
         
-        if not inventory:
-            embed = discord.Embed(
-                title=f"🎒 {member.display_name}'s Inventory",
-                description="No items found. Visit the shop with `!shop` to buy some!",
-                color=discord.Color.blue()
-            )
-            return await ctx.send(embed=embed)
-        
         embed = discord.Embed(
             title=f"🎒 {member.display_name}'s Inventory",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
         )
         
-        total_items = 0
-        for item_data in inventory:
-            item_id = item_data['item_id']
-            quantity = item_data['quantity']
-            total_items += quantity
+        if not inventory:
+            embed.description = "No items found. Visit the shop with `~~shop` to buy some!"
+        else:
+            total_items = 0
+            for item_data in inventory:
+                item_id = item_data['item_id']
+                quantity = item_data['quantity']
+                total_items += quantity
+                
+                # Find item details
+                item = next((i for i in self.shop_items if i['id'] == item_id), None)
+                if item:
+                    embed.add_field(
+                        name=f"{item['name']} x{quantity}",
+                        value=f"ID: {item_id} | Type: {item['type']}",
+                        inline=True
+                    )
             
-            # Find item details
-            item = next((i for i in self.shop_items if i['id'] == item_id), None)
-            if item:
-                embed.add_field(
-                    name=f"{item['name']} x{quantity}",
-                    value=f"ID: {item_id} | Type: {item['type']}",
-                    inline=True
-                )
+            embed.set_footer(text=f"Total items: {total_items}")
         
-        embed.set_footer(text=f"Total items: {total_items}")
         embed.set_thumbnail(url=member.display_avatar.url)
-        
         await ctx.send(embed=embed)
     
     # -------------------- Leaderboard --------------------
@@ -828,11 +915,12 @@ class Economy(commands.Cog):
             ]
             
             cursor = users_collection.aggregate(pipeline)
-            top_users = await cursor.to_list(length=10)
+            top_users = list(cursor)
             
             embed = discord.Embed(
                 title="🏆 Wealth Leaderboard",
-                color=discord.Color.gold()
+                color=discord.Color.gold(),
+                timestamp=datetime.now(timezone.utc)
             )
             
             if not top_users:
@@ -842,7 +930,7 @@ class Economy(commands.Cog):
                 for i, user_data in enumerate(top_users, 1):
                     user_id = int(user_data['user_id'])
                     user = self.bot.get_user(user_id)
-                    username = user.name if user else f"User {user_id}"
+                    username = user.display_name if user else f"User {user_id}"
                     net_worth = user_data.get('net_worth', 0)
                     
                     medal = ""
@@ -873,3 +961,4 @@ class Economy(commands.Cog):
 async def setup(bot):
     """Setup function for the Economy cog."""
     await bot.add_cog(Economy(bot))
+    logging.info("✅ Economy cog loaded successfully")
