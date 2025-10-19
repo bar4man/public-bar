@@ -1,10 +1,11 @@
 import discord
 from discord.ext import commands
 import os
-import json
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+from database import db
+import webserver
 
 # Load environment variables
 load_dotenv()
@@ -15,7 +16,6 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log'),
         logging.StreamHandler()
     ]
 )
@@ -36,55 +36,54 @@ bot = commands.Bot(
 # Global variables
 ADMIN_ROLE = "bot-admin"
 
-# Data file paths
-DATA_DIR = "data"
-ECONOMY_FILE = f"{DATA_DIR}/economy.json"
-MARKET_FILE = f"{DATA_DIR}/market.json"
-JOBS_FILE = f"{DATA_DIR}/jobs.json"
-
-# Create data directory if it doesn't exist
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
-    logger.info(f"Created {DATA_DIR} directory")
-
 # Initialize data files
 def init_data_files():
     """Initialize all JSON data files with default structures"""
     
     # Economy data structure
-    if not os.path.exists(ECONOMY_FILE):
-        with open(ECONOMY_FILE, 'w') as f:
+    if not os.path.exists('economy.json'):
+        with open('economy.json', 'w') as f:
             json.dump({}, f, indent=2)
-        logger.info(f"Created {ECONOMY_FILE}")
+        logger.info("Created economy.json")
     
     # Market data structure
-    if not os.path.exists(MARKET_FILE):
+    if not os.path.exists('market.json'):
         default_market = {
             "stocks": {
                 "TECH": {"name": "Tech Corp", "price": 100, "history": []},
                 "FOOD": {"name": "Food Industries", "price": 50, "history": []},
-                "ENERGY": {"name": "Energy Solutions", "price": 75, "history": []}
+                "ENERGY": {"name": "Energy Solutions", "price": 75, "history": []},
+                "GAME": {"name": "Gaming Corp", "price": 120, "history": []},
+                "AUTO": {"name": "Auto Motors", "price": 90, "history": []}
             },
             "news": [],
             "last_update": datetime.utcnow().isoformat()
         }
-        with open(MARKET_FILE, 'w') as f:
+        with open('market.json', 'w') as f:
             json.dump(default_market, f, indent=2)
-        logger.info(f"Created {MARKET_FILE}")
+        logger.info("Created market.json")
     
     # Jobs data structure
-    if not os.path.exists(JOBS_FILE):
+    if not os.path.exists('jobs.json'):
         default_jobs = {
             "available_jobs": [
-                {"name": "cashier", "pay": 50, "required_balance": 0, "cooldown": 3600},
-                {"name": "delivery", "pay": 100, "required_balance": 500, "cooldown": 3600},
-                {"name": "manager", "pay": 200, "required_balance": 2000, "cooldown": 7200},
-                {"name": "ceo", "pay": 500, "required_balance": 10000, "cooldown": 14400}
+                {"name": "cashier", "pay": 50, "required_balance": 0, "cooldown": 3600, "emoji": "🏪"},
+                {"name": "delivery", "pay": 100, "required_balance": 500, "cooldown": 3600, "emoji": "🚚"},
+                {"name": "chef", "pay": 150, "required_balance": 1000, "cooldown": 5400, "emoji": "👨‍🍳"},
+                {"name": "manager", "pay": 250, "required_balance": 2500, "cooldown": 7200, "emoji": "💼"},
+                {"name": "engineer", "pay": 400, "required_balance": 5000, "cooldown": 10800, "emoji": "⚙️"},
+                {"name": "ceo", "pay": 750, "required_balance": 10000, "cooldown": 14400, "emoji": "👔"}
             ]
         }
-        with open(JOBS_FILE, 'w') as f:
+        with open('jobs.json', 'w') as f:
             json.dump(default_jobs, f, indent=2)
-        logger.info(f"Created {JOBS_FILE}")
+        logger.info("Created jobs.json")
+    
+    # Cooldowns file
+    if not os.path.exists('cooldowns.json'):
+        with open('cooldowns.json', 'w') as f:
+            json.dump({}, f, indent=2)
+        logger.info("Created cooldowns.json")
 
 # Utility functions
 def has_admin_role(member):
@@ -190,12 +189,12 @@ async def help_command(ctx, category: str = None):
         )
         embed.add_field(
             name="👑 Admin",
-            value="`!help admin` - Admin-only commands",
+            value="`!help admin` - Admin-only commands (requires bot-admin role)",
             inline=False
         )
         embed.add_field(
             name="💰 Economy",
-            value="`!help economy` - Economy, jobs, and market commands",
+            value="`!help economy` - Economy, jobs, gambling, and market commands",
             inline=False
         )
         embed.set_footer(text="Use !help <category> for detailed commands")
@@ -207,18 +206,33 @@ async def help_command(ctx, category: str = None):
             color=discord.Color.blue()
         )
         embed.add_field(
-            name="!clear <amount>",
-            value="Clear messages from channel",
-            inline=False
-        )
-        embed.add_field(
             name="!ping",
             value="Check bot latency",
             inline=False
         )
         embed.add_field(
+            name="!clear <amount>",
+            value="Clear messages from channel (requires Manage Messages)",
+            inline=False
+        )
+        embed.add_field(
             name="!serverinfo",
             value="Display server information",
+            inline=False
+        )
+        embed.add_field(
+            name="!userinfo [@user]",
+            value="Display user information",
+            inline=False
+        )
+        embed.add_field(
+            name="!avatar [@user]",
+            value="Display user's avatar",
+            inline=False
+        )
+        embed.add_field(
+            name="!invite",
+            value="Get bot invite link",
             inline=False
         )
         await ctx.send(embed=embed)
@@ -230,8 +244,13 @@ async def help_command(ctx, category: str = None):
             color=discord.Color.gold()
         )
         embed.add_field(
-            name="Coming Soon",
-            value="Admin commands will be added in the next file",
+            name="💰 Economy Management",
+            value="`!addmoney @user <amount>`\n`!removemoney @user <amount>`\n`!setmoney @user <amount>`\n`!resetuser @user`\n`!viewuser @user`",
+            inline=False
+        )
+        embed.add_field(
+            name="📊 Market Management",
+            value="`!setprice <symbol> <price>`\n`!addstock <symbol> <name> <price>`\n`!sendnews #channel <message>`",
             inline=False
         )
         await ctx.send(embed=embed)
@@ -242,8 +261,28 @@ async def help_command(ctx, category: str = None):
             color=discord.Color.green()
         )
         embed.add_field(
-            name="Coming Soon",
-            value="Economy commands will be added in the next file",
+            name="🏦 Banking",
+            value="`!balance [@user]` - Check balance\n`!deposit <amount|all>` - Deposit to bank\n`!withdraw <amount|all>` - Withdraw from bank\n`!pay @user <amount>` - Pay another user",
+            inline=False
+        )
+        embed.add_field(
+            name="💼 Jobs",
+            value="`!jobs` - View available jobs\n`!work <jobname>` - Work at a job",
+            inline=False
+        )
+        embed.add_field(
+            name="🎰 Gambling",
+            value="`!coinflip <heads|tails> <amount>`\n`!dice <amount>`\n`!slots <amount>`",
+            inline=False
+        )
+        embed.add_field(
+            name="📈 Market",
+            value="`!market` - View stock market\n`!buy <symbol> <shares>` - Buy stocks\n`!sell <symbol> <shares>` - Sell stocks\n`!portfolio [@user]` - View portfolio",
+            inline=False
+        )
+        embed.add_field(
+            name="📊 Other",
+            value="`!leaderboard` - View wealth leaderboard",
             inline=False
         )
         await ctx.send(embed=embed)
@@ -256,7 +295,7 @@ async def help_command(ctx, category: str = None):
         )
         await ctx.send(embed=embed)
 
-# Load cogs (we'll add these later)
+# Load cogs
 async def load_extensions():
     """Load all cog extensions"""
     extensions = ['general', 'admin', 'economy']
