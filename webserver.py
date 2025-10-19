@@ -1,6 +1,7 @@
 from flask import Flask
 from threading import Thread
 import logging
+import os
 
 logger = logging.getLogger('discord_bot')
 
@@ -16,7 +17,8 @@ def health():
 
 def run():
     try:
-        app.run(host='0.0.0.0', port=8080)
+        port = int(os.getenv('PORT', '8080'))
+        app.run(host='0.0.0.0', port=port)
     except Exception as e:
         logger.error(f"Webserver error: {e}")
 

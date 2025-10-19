@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import os
 import logging
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from database import db
@@ -319,6 +320,8 @@ if __name__ == '__main__':
         logger.error("DISCORD_TOKEN not found in environment variables!")
     else:
         try:
+            # Start web keep-alive server for Render
+            webserver.keep_alive()
             bot.run(TOKEN)
         except Exception as e:
             logger.critical(f"Failed to start bot: {e}")
