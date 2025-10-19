@@ -11,11 +11,6 @@ import aiohttp
 import sys
 import traceback
 
-# Add the current directory to Python path for Render
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
-
 # ---------------- Setup ----------------
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -48,6 +43,17 @@ def setup_logging():
     logger.addHandler(console_handler)
 
 setup_logging()
+
+# Test critical dependencies before anything else
+try:
+    import discord
+    import flask
+    import pymongo
+    logging.info("✅ Critical dependencies loaded successfully")
+except ImportError as e:
+    logging.error(f"❌ Critical dependency missing: {e}")
+    logging.error("Please check your requirements.txt and virtual environment")
+    sys.exit(1)
 
 # Discord intents with validation
 intents = discord.Intents.default()
@@ -185,7 +191,7 @@ class DatabaseManager:
             self.client.admin.command('ping')
             self.is_connected = True
             
-            # Setup indexes
+            # Setup indexes using database_schemas
             await self._setup_indexes()
             
             logging.info("✅ Successfully connected to MongoDB")
@@ -199,21 +205,21 @@ class DatabaseManager:
     async def _setup_indexes(self):
         """Create necessary database indexes."""
         try:
-            # Users collection indexes
-            self.db.users.create_index("user_id", unique=True)
+            # Import and initialize database schemas
+            from database_schemas import DatabaseSchemas
+            schemas = DatabaseSchemas(self.db)
+            await schemas.initialize_database()
             
-            # Market collections
+            logging.info("✅ Database indexes and schemas initialized")
+        except ImportError:
+            logging.warning("⚠️ database_schemas.py not found, creating basic indexes")
+            # Fallback basic indexes
+            self.db.users.create_index("user_id", unique=True)
             self.db.market_positions.create_index([("user_id", 1), ("commodity", 1)])
             self.db.market_trades.create_index([("user_id", 1), ("timestamp", -1)])
             self.db.market_portfolios.create_index("user_id", unique=True)
-            self.db.price_history.create_index([("symbol", 1), ("timestamp", -1)])
-            self.db.market_state.create_index("_id", unique=True)
-            self.db.economic_state.create_index("_id", unique=True)
-            self.db.market_events.create_index([("active", 1), ("expires_at", 1)])
-            
-            logging.info("✅ Database indexes created")
         except Exception as e:
-            logging.error(f"❌ Failed to create indexes: {e}")
+            logging.error(f"❌ Failed to setup indexes: {e}")
     
     def get_collection(self, name):
         """Get a MongoDB collection."""
@@ -221,6 +227,17 @@ class DatabaseManager:
             logging.error("Database not connected")
             return None
         return self.db[name]
+    
+    async def get_stats(self):
+        """Get database statistics."""
+        try:
+            from database_schemas import DatabaseSchemas
+            schemas = DatabaseSchemas(self.db)
+            return await schemas.get_database_stats()
+        except ImportError:
+            return {'error': 'database_schemas.py not available'}
+        except Exception as e:
+            return {'error': str(e)}
     
     async def close(self):
         """Close database connection."""
@@ -357,9 +374,9 @@ async def on_message(message):
     
     await bot.process_commands(message)
 
-# ---------------- Enhanced Cog Loader ----------------
+# ---------------- Simplified Cog Loader ----------------
 async def load_cogs():
-    """Enhanced cog loader that handles nested folders properly."""
+    """Simplified cog loader for flat structure."""
     loaded_count = 0
     
     # Connect to database first
@@ -367,28 +384,22 @@ async def load_cogs():
     if not db_connected:
         logging.error("❌ Database connection failed - some features may not work")
     
-    # Load cogs from different locations
-    cog_paths = [
-        "cogs",           # Main cogs folder
-        "markets",        # Markets system
+    # List of cog files in root directory
+    cog_files = [
+        'admin',
+        'economy', 
+        'market_cog',
+        'test_cog'
     ]
     
-    for cog_path in cog_paths:
-        if os.path.exists(cog_path):
-            logging.info(f"📁 Loading cogs from: {cog_path}")
-            for filename in os.listdir(cog_path):
-                if filename.endswith('.py') and filename != '__init__.py':
-                    cog_name = f"{cog_path}.{filename[:-3]}"
-                    try:
-                        await bot.load_extension(cog_name)
-                        loaded_count += 1
-                        logging.info(f"✅ Loaded cog: {cog_name}")
-                    except Exception as e:
-                        logging.error(f"❌ Failed to load cog {cog_name}: {e}")
-                        # Print full traceback for debugging
-                        traceback.print_exc()
-        else:
-            logging.warning(f"⚠️ Cog path not found: {cog_path}")
+    for cog_file in cog_files:
+        try:
+            await bot.load_extension(cog_file)
+            loaded_count += 1
+            logging.info(f"✅ Loaded cog: {cog_file}")
+        except Exception as e:
+            logging.error(f"❌ Failed to load cog {cog_file}: {e}")
+            traceback.print_exc()
     
     # Sync application commands
     try:
@@ -422,8 +433,6 @@ async def setup_hook():
     
     # Create necessary directories
     os.makedirs("data", exist_ok=True)
-    os.makedirs("cogs", exist_ok=True)
-    os.makedirs("markets", exist_ok=True)
     os.makedirs("markets/config", exist_ok=True)
     logging.info("📁 Directories initialized")
     
@@ -552,12 +561,15 @@ if __name__ == "__main__":
             exit(1)
             
         bot.run(TOKEN)
+        
     except KeyboardInterrupt:
         logging.info("⏹️ Bot stopped by user")
         if bot.database_manager.is_connected:
             bot.database_manager.close()
     except discord.LoginFailure:
         logging.critical("❌ Invalid Discord token")
+        exit(1)
     except Exception as e:
         logging.critical(f"❌ Failed to start bot: {e}")
         traceback.print_exc()
+        exit(1)
