@@ -392,9 +392,10 @@ async def _show_general_help(ctx: commands.Context):
     embed.add_field(
         name="📁 Command Categories",
         value=(
-            "**~~admin** - Moderation and server management\n"
-            "**~~economy** - Money, games, and economy system\n"
-            "**~~help <category>** - Show specific category help"
+            "**~~help admin** - Moderation and server management\n"
+            "**~~help economy** - Money, games, and economy system\n"
+            "**~~admin** - Direct admin commands\n"
+            "**~~economy** - Direct economy commands"
         ),
         inline=False
     )
@@ -423,7 +424,7 @@ async def _show_admin_help(ctx: commands.Context):
     """Show admin/moderation commands."""
     embed = discord.Embed(
         title="🛡️ Admin & Moderation Commands",
-        description="Server management and moderation tools.",
+        description="Server management and moderation tools. Requires admin permissions.",
         color=discord.Color.red()
     )
     
@@ -434,7 +435,7 @@ async def _show_admin_help(ctx: commands.Context):
         "`unban <user_id> [reason]` - Unban a user",
         "`mute <member> [reason]` - Mute a member",
         "`unmute <member> [reason]` - Unmute a member",
-        "`clear <amount>` - Delete messages",
+        "`clear <amount>` - Delete messages (1-100)",
         "`clearuser <member> <amount>` - Delete user messages"
     ]
     
@@ -503,7 +504,7 @@ async def _show_economy_help(ctx: commands.Context):
         "`networth [member]` - Check total net worth",
         "`deposit <amount|all|max>` - Deposit to bank",
         "`withdraw <amount|all>` - Withdraw from bank",
-        "`pay <member> <amount>` - Pay another user"
+        "`upgrade <wallet/bank>` - Upgrade limits"
     ]
     
     embed.add_field(
@@ -515,8 +516,7 @@ async def _show_economy_help(ctx: commands.Context):
     # Earning Commands
     earning_cmds = [
         "`daily` - Claim daily reward (24h cooldown)",
-        "`work` - Work for money (1h cooldown)", 
-        "`crime` - High-risk crime (2h cooldown)"
+        "`work` - Work for money (1h cooldown)"
     ]
     
     embed.add_field(
@@ -525,27 +525,11 @@ async def _show_economy_help(ctx: commands.Context):
         inline=False
     )
     
-    # Games & Gambling
-    game_cmds = [
-        "`flip <heads/tails> <bet>` - Coin flip game",
-        "`dice <bet>` - Dice rolling game", 
-        "`rps <rock/paper/scissors> <bet>` - Rock Paper Scissors",
-        "`guess <bet>` - Number guessing game",
-        "`blackjack <bet>` - Blackjack card game"
-    ]
-    
-    embed.add_field(
-        name="🎮 Games & Gambling", 
-        value="\n".join(game_cmds),
-        inline=False
-    )
-    
     # Shop & Items
     shop_cmds = [
         "`shop` - Browse the shop",
         "`buy <item_id>` - Purchase an item", 
-        "`inventory [member]` - View inventory",
-        "`use <item_name>` - Use a consumable item"
+        "`pay <member> <amount>` - Pay another user"
     ]
     
     embed.add_field(
@@ -554,15 +538,14 @@ async def _show_economy_help(ctx: commands.Context):
         inline=False
     )
     
-    # Social & Leaderboards
-    social_cmds = [
-        "`leaderboard` - Wealth leaderboard", 
-        "`pay <member> <amount>` - Pay another user"
-    ]
-    
     embed.add_field(
-        name="👥 Social & Leaderboards",
-        value="\n".join(social_cmds),
+        name="💡 Important Notes",
+        value=(
+            "• **Shop purchases use BANK money**\n"
+            "• **Payments use WALLET money**\n"
+            "• Use `~~deposit` to move money to bank\n"
+            "• Use `~~withdraw` to get money from bank"
+        ),
         inline=False
     )
     
