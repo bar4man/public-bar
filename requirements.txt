@@ -1,4 +1,9 @@
 discord.py
-python-dotenv
 Flask
-pymongo[srv]
+python-dotenv
+aiofiles
+psutil
+waitress
+motor
+pymongo
+
