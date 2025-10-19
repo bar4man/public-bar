@@ -2,6 +2,7 @@ import os
 import logging
 from dotenv import load_dotenv
 import sys
+import asyncio
 
 # Load environment variables first
 load_dotenv()
@@ -17,26 +18,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Try to import discord with fallbacks
+# Import discord
 try:
     import discord
-    from discord.ext import commands, tasks
+    from discord.ext import commands
     logger.info("✅ Using discord.py")
-except ImportError:
-    try:
-        import discord
-        from discord.ext import commands, tasks
-        logger.info("✅ Using discord.py-self")
-    except ImportError:
-        try:
-            import discord
-            from discord.ext import commands, tasks
-            logger.info("✅ Using py-cord")
-        except ImportError as e:
-            logger.error(f"❌ No compatible Discord library found: {e}")
-            sys.exit(1)
+except ImportError as e:
+    logger.error(f"❌ Discord import failed: {e}")
+    sys.exit(1)
 
-import asyncio
 import json
 from datetime import datetime, timezone, timedelta
 import traceback
@@ -46,19 +36,16 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 MONGODB_URI = os.getenv("MONGODB_URI")
 KEEP_ALIVE = os.getenv("KEEP_ALIVE", "true").lower() == "true"
 
-# Discord intents (voice disabled)
+# Discord intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
-# Explicitly disable voice to avoid audioop
-intents.voice_states = False
 
 # ---------------- Manager Classes ----------------
 class ConfigManager:
     def __init__(self, filename="config.json"):
         self.filename = filename
-        self.lock = asyncio.Lock()
         self.default_config = {
             "prefix": "~~",
             "allowed_channels": [],
@@ -75,22 +62,20 @@ class ConfigManager:
     
     async def load(self):
         """Load configuration from file."""
-        async with self.lock:
-            try:
-                with open(self.filename, "r") as f:
-                    return json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                return self.default_config.copy()
+        try:
+            with open(self.filename, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return self.default_config.copy()
     
     async def save(self, data):
         """Save configuration to file."""
-        async with self.lock:
-            try:
-                with open(self.filename, "w") as f:
-                    json.dump(data, f, indent=2)
-                return True
-            except Exception:
-                return False
+        try:
+            with open(self.filename, "w") as f:
+                json.dump(data, f, indent=2)
+            return True
+        except Exception:
+            return False
 
 class DatabaseManager:
     def __init__(self):
@@ -162,6 +147,47 @@ class EconomyBot(commands.Bot):
                 name=f"{len(self.guilds)} servers | ~~help"
             )
         )
+        
+        # Start background tasks after bot is ready
+        self.update_status.start()
+
+    async def setup_hook(self):
+        """Setup hook."""
+        logger.info("🔧 Setting up bot...")
+        os.makedirs("data", exist_ok=True)
+        await self.load_cogs()
+    
+    async def load_cogs(self):
+        """Load all cogs."""
+        cogs = ['admin', 'economy']
+        loaded = 0
+        
+        # Connect to database first
+        await self.database_manager.connect()
+        
+        for cog in cogs:
+            try:
+                await self.load_extension(cog)
+                loaded += 1
+                logger.info(f"✅ Loaded {cog}")
+            except Exception as e:
+                logger.error(f"❌ Failed to load {cog}: {e}")
+        
+        logger.info(f"📊 Loaded {loaded}/{len(cogs)} cogs")
+    
+    @tasks.loop(minutes=5)
+    async def update_status(self):
+        """Update bot status."""
+        try:
+            await self.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.watching,
+                    name=f"{len(self.guilds)} servers | ~~help"
+                )
+            )
+            logger.debug("✅ Status updated")
+        except Exception as e:
+            logger.error(f"Status update failed: {e}")
 
 # Create bot instance
 bot = EconomyBot()
@@ -197,33 +223,6 @@ async def on_command_error(ctx, error):
         await ctx.send(embed=error_embed, delete_after=10)
     except discord.Forbidden:
         pass
-
-# ---------------- Cog Management ----------------
-async def load_cogs():
-    """Load all cogs."""
-    cogs = ['admin', 'economy']
-    loaded = 0
-    
-    # Connect to database first
-    await bot.database_manager.connect()
-    
-    for cog in cogs:
-        try:
-            await bot.load_extension(cog)
-            loaded += 1
-            logger.info(f"✅ Loaded {cog}")
-        except Exception as e:
-            logger.error(f"❌ Failed to load {cog}: {e}")
-    
-    logger.info(f"📊 Loaded {loaded}/{len(cogs)} cogs")
-
-# ---------------- Bot Events ----------------
-@bot.event
-async def setup_hook():
-    """Setup hook."""
-    logger.info("🔧 Setting up bot...")
-    os.makedirs("data", exist_ok=True)
-    await load_cogs()
 
 @bot.event
 async def on_message(message):
@@ -304,20 +303,6 @@ async def help(ctx):
     
     await ctx.send(embed=embed)
 
-# ---------------- Background Tasks ----------------
-@tasks.loop(minutes=5)
-async def update_status():
-    """Update bot status."""
-    try:
-        await bot.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{len(bot.guilds)} servers | ~~help"
-            )
-        )
-    except Exception as e:
-        logger.error(f"Status update failed: {e}")
-
 # ---------------- Web Server ----------------
 def start_web_server():
     """Start web server for keep-alive."""
@@ -364,15 +349,11 @@ if __name__ == "__main__":
         if KEEP_ALIVE:
             start_web_server()
         
-        # Start background tasks
-        update_status.start()
-        
-        # Run bot
+        # Run bot - this will start the event loop
         bot.run(TOKEN)
         
     except KeyboardInterrupt:
         logger.info("⏹️ Bot stopped")
-        update_status.cancel()
         if bot.database_manager.is_connected:
             bot.database_manager.close()
     except Exception as e:
