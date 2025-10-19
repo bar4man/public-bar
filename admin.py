@@ -12,8 +12,8 @@ class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.admin_role = "bot-admin"
-        self.economy_file = "data/economy.json"
-        self.market_file = "data/market.json"
+        self.economy_file = "economy.json"
+        self.market_file = "market.json"
     
     def has_admin_role(self, member):
         """Check if member has bot-admin role"""
