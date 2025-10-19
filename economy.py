@@ -151,12 +151,53 @@ class MongoDB:
                 await self.db.shop.insert_one(default_shop)
                 logging.info("✅ Default shop items created")
             
+            # Migrate existing users to new schema
+            await self.migrate_user_schema()
+            
             logging.info("✅ MongoDB collections initialized")
             return True
             
         except Exception as e:
             logging.error(f"❌ MongoDB initialization failed: {e}")
             return False
+    
+    async def migrate_user_schema(self):
+        """Migrate existing users to include wallet_limit and bank_limit fields."""
+        try:
+            # Find users missing the new fields
+            users_to_update = await self.db.users.find({
+                "$or": [
+                    {"wallet_limit": {"$exists": False}},
+                    {"bank_limit": {"$exists": False}}
+                ]
+            }).to_list(length=None)
+            
+            if users_to_update:
+                logging.info(f"🔄 Migrating {len(users_to_update)} users to new schema")
+                
+                for user in users_to_update:
+                    update_data = {}
+                    
+                    # Add missing wallet_limit with default value
+                    if "wallet_limit" not in user:
+                        update_data["wallet_limit"] = 50000  # Default wallet limit: 50k
+                    
+                    # Add missing bank_limit with default value  
+                    if "bank_limit" not in user:
+                        update_data["bank_limit"] = 500000  # Default bank limit: 500k
+                    
+                    if update_data:
+                        await self.db.users.update_one(
+                            {"_id": user["_id"]},
+                            {"$set": update_data}
+                        )
+                
+                logging.info(f"✅ Successfully migrated {len(users_to_update)} users")
+            else:
+                logging.info("✅ All users already have the new schema")
+                
+        except Exception as e:
+            logging.error(f"❌ Error during user schema migration: {e}")
     
     # User management
     async def get_user(self, user_id: int) -> Dict:
@@ -170,10 +211,25 @@ class MongoDB:
                 user = self._get_default_user(user_id)
                 await self.db.users.insert_one(user)
                 logging.info(f"👤 New user created in MongoDB: {user_id}")
+            else:
+                # Ensure the user has all required fields (backward compatibility)
+                user = self._ensure_user_schema(user)
             return user
         except Exception as e:
             logging.error(f"❌ Error getting user {user_id}: {e}")
             return self._get_default_user(user_id)
+    
+    def _ensure_user_schema(self, user: Dict) -> Dict:
+        """Ensure user has all required fields for backward compatibility."""
+        default_user = self._get_default_user(user["user_id"])
+        
+        # Add any missing fields with default values
+        for key, value in default_user.items():
+            if key not in user:
+                user[key] = value
+                logging.info(f"🔄 Added missing field '{key}' to user {user['user_id']}")
+        
+        return user
     
     def _get_default_user(self, user_id: int) -> Dict:
         """Return default user structure."""
@@ -206,6 +262,9 @@ class MongoDB:
         """Update user's wallet and bank balance with limits."""
         user = await self.get_user(user_id)
         
+        # Ensure user has required fields (double safety check)
+        user = self._ensure_user_schema(user)
+        
         # Update wallet with limit check
         new_wallet = user['wallet'] + wallet_change
         if new_wallet > user['wallet_limit']:
@@ -236,6 +295,10 @@ class MongoDB:
         """Transfer money between users (wallet to wallet)."""
         from_user_data = await self.get_user(from_user)
         to_user_data = await self.get_user(to_user)
+        
+        # Ensure both users have required fields
+        from_user_data = self._ensure_user_schema(from_user_data)
+        to_user_data = self._ensure_user_schema(to_user_data)
         
         # Check if sender has enough in wallet
         if from_user_data['wallet'] < amount:
