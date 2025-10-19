@@ -362,7 +362,7 @@ async def before_auto_cleaner():
 @bot.command(name="help")
 async def help_command(ctx: commands.Context, category: str = None):
     """Main help command with categories. Use ~~help admin or ~~help economy."""
-    if category and category.lower() in ["admin", "economy", "market"]:
+    if category and category.lower() in ["admin", "economy", "markets"]:
         await _show_category_help(ctx, category.lower())
     else:
         await _show_general_help(ctx)
@@ -394,10 +394,10 @@ async def _show_general_help(ctx: commands.Context):
         value=(
             "**~~help admin** - Moderation and server management\n"
             "**~~help economy** - Money, games, and economy system\n"
-            "**~~help market** - Stock market and gold trading\n"
+            "**~~help markets** - Stock market and gold trading\n"
             "**~~admin** - Direct admin commands\n"
             "**~~economy** - Direct economy commands\n"
-            "**~~market** - Direct market commands"
+            "**~~markets** - Direct market commands"
         ),
         inline=False
     )
@@ -406,7 +406,7 @@ async def _show_general_help(ctx: commands.Context):
         name="💡 Quick Start",
         value=(
             "• Use `~~economy` to see money commands\n"
-            "• Use `~~market` for stock trading\n"
+            "• Use `~~markets` for stock trading\n"
             "• Use `~~admin` for moderation tools\n"
             "• Most commands have cooldowns for balance"
         ),
@@ -422,8 +422,8 @@ async def _show_category_help(ctx: commands.Context, category: str):
         await _show_admin_help(ctx)
     elif category == "economy":
         await _show_economy_help(ctx)
-    elif category == "market":
-        await _show_market_help(ctx)
+    elif category == "markets":
+        await _show_markets_help(ctx)
 
 async def _show_admin_help(ctx: commands.Context):
     """Show admin/moderation commands."""
@@ -574,7 +574,7 @@ async def _show_economy_help(ctx: commands.Context):
     embed.set_footer(text="Most commands have cooldowns - check individual command help")
     await ctx.send(embed=embed)
 
-async def _show_market_help(ctx: commands.Context):
+async def _show_markets_help(ctx: commands.Context):
     """Show market and trading commands."""
     embed = discord.Embed(
         title="🏛️ Market & Trading Commands",
@@ -657,10 +657,10 @@ async def economy_help(ctx: commands.Context):
     """Direct economy help command."""
     await _show_economy_help(ctx)
 
-@bot.command(name="market")
-async def market_help(ctx: commands.Context):
-    """Direct market help command."""
-    await _show_market_help(ctx)
+@bot.command(name="markets")
+async def markets_help(ctx: commands.Context):
+    """Direct markets help command."""
+    await _show_markets_help(ctx)
 
 # ---------------- Cog Loader ----------------
 async def load_cogs():
