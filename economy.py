@@ -1,690 +1,322 @@
 import discord
 from discord.ext import commands, tasks
-import random
-import asyncio
+import json
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Tuple
-import math
+import random
+from datetime import datetime, timedelta
+import asyncio
+
+logger = logging.getLogger('discord_bot')
 
 class Economy(commands.Cog):
-    """Enhanced economy system with MongoDB integration."""
+    """Economy system with banking, jobs, gambling, and market"""
     
     def __init__(self, bot):
         self.bot = bot
-        self.cooldowns: Dict[int, Dict[str, datetime]] = {}
-        self.work_jobs: List[str] = [
-            "worked as a software developer", "delivered food", "streamed on Twitch",
-            "sold artwork", "wrote a blog post", "did freelance work",
-            "performed at a concert", "sold items online", "invested in stocks",
-            "won a gaming tournament", "created a YouTube video", "did consulting work",
-            "sold crafts", "performed magic tricks", "wrote code for a client",
-            "designed a website", "gave music lessons", "walked dogs",
-            "babysat", "tutored students", "did yard work", "cleaned houses",
-            "drove for Uber", "sold baked goods", "performed in a play"
-        ]
+        self.economy_file = "economy.json"
+        self.market_file = "market.json"
+        self.jobs_file = "jobs.json"
+        self.cooldowns_file = "cooldowns.json"
         
-        self.crime_activities: List[Tuple[str, int, int]] = [
-            ("pickpocket someone", 50, 80),
-            ("hack a small website", 100, 200),
-            ("sell fake items", 150, 300),
-            ("rob a convenience store", 300, 600),
-            ("hack a bank (very risky!)", 500, 1000),
-            ("steal a car", 400, 800),
-            ("sell confidential information", 600, 1200),
-            ("pull off a heist", 800, 1600),
-            ("hack a government server (extremely risky!)", 1000, 2000)
-        ]
-        
-        self.shop_items: List[Dict] = [
-            {"id": 1, "name": "🍎 Apple", "description": "A healthy snack", "price": 50, "type": "consumable"},
-            {"id": 2, "name": "💧 Water Bottle", "description": "Stay hydrated", "price": 30, "type": "consumable"},
-            {"id": 3, "name": "🍔 Burger", "description": "A delicious meal", "price": 100, "type": "consumable"},
-            {"id": 4, "name": "🎣 Fishing Rod", "description": "For fishing activities", "price": 500, "type": "tool"},
-            {"id": 5, "name": "⛏️ Pickaxe", "description": "For mining activities", "price": 800, "type": "tool"},
-            {"id": 6, "name": "💎 Diamond", "description": "A rare gemstone", "price": 2000, "type": "collectible"},
-            {"id": 7, "name": "🏆 Trophy", "description": "Show off your achievements", "price": 5000, "type": "collectible"},
-            {"id": 8, "name": "🎮 Gaming Console", "description": "For entertainment", "price": 3000, "type": "collectible"},
-            {"id": 9, "name": "📱 Smartphone", "description": "Modern communication device", "price": 2500, "type": "collectible"},
-            {"id": 10, "name": "💼 Briefcase", "description": "Carry your items in style", "price": 1500, "type": "collectible"}
-        ]
+        # Initialize files if they don't exist
+        self._init_files()
         
         # Start background tasks
-        self.cleanup_cooldowns.start()
-        logging.info("✅ Economy system initialized")
+        self.market_update.start()
+        self.random_news.start()
     
-    def cog_unload(self):
-        """Cleanup when cog is unloaded."""
-        self.cleanup_cooldowns.cancel()
-        logging.info("Economy system unloaded")
-    
-    # -------------------- Database Methods --------------------
-    async def get_user_data(self, user_id: int) -> Dict:
-        """Get user data from MongoDB."""
+    def _init_files(self):
+        """Initialize all economy-related files"""
+        # Economy file
         try:
-            users_collection = self.bot.database_manager.get_collection('users')
-            if not users_collection:
-                return self._get_default_user_data(user_id)
-            
-            user_data = users_collection.find_one({"user_id": str(user_id)})
-            if not user_data:
-                # Create new user if doesn't exist
-                return await self.create_user(user_id)
-            
-            return user_data
-        except Exception as e:
-            logging.error(f"Error getting user data for {user_id}: {e}")
-            return self._get_default_user_data(user_id)
-    
-    async def create_user(self, user_id: int) -> Dict:
-        """Create a new user in the database."""
+            with open(self.economy_file, 'r') as f:
+                json.load(f)
+        except:
+            with open(self.economy_file, 'w') as f:
+                json.dump({}, f, indent=2)
+        
+        # Market file
         try:
-            users_collection = self.bot.database_manager.get_collection('users')
-            if not users_collection:
-                return self._get_default_user_data(user_id)
-            
-            user_data = self._get_default_user_data(user_id)
-            users_collection.insert_one(user_data.copy())  # Insert copy to avoid modifying original
-            return user_data
-        except Exception as e:
-            logging.error(f"Error creating user {user_id}: {e}")
-            return self._get_default_user_data(user_id)
-    
-    def _get_default_user_data(self, user_id: int) -> Dict:
-        """Get default user data structure."""
-        return {
-            "user_id": str(user_id),
-            "balance": 1000,
-            "bank_balance": 0,
-            "last_daily": None,
-            "last_work": None,
-            "last_crime": None,
-            "total_earned": 0,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
-    
-    async def update_user_data(self, user_id: int, update_data: Dict) -> bool:
-        """Update user data in MongoDB."""
-        try:
-            users_collection = self.bot.database_manager.get_collection('users')
-            if not users_collection:
-                return False
-            
-            # Ensure updated_at is always set
-            if "$set" in update_data:
-                update_data["$set"]["updated_at"] = datetime.now(timezone.utc).isoformat()
-            else:
-                update_data["$set"] = {"updated_at": datetime.now(timezone.utc).isoformat()}
-            
-            result = users_collection.update_one(
-                {"user_id": str(user_id)},
-                update_data,
-                upsert=True
-            )
-            return result.modified_count > 0 or result.upserted_id is not None
-        except Exception as e:
-            logging.error(f"Error updating user data for {user_id}: {e}")
-            return False
-    
-    async def add_to_inventory(self, user_id: int, item_id: int, quantity: int = 1) -> bool:
-        """Add item to user's inventory."""
-        try:
-            inventory_collection = self.bot.database_manager.get_collection('inventory')
-            if not inventory_collection:
-                return False
-            
-            result = inventory_collection.update_one(
-                {"user_id": str(user_id), "item_id": item_id},
-                {
-                    "$inc": {"quantity": quantity},
-                    "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}
+            with open(self.market_file, 'r') as f:
+                json.load(f)
+        except:
+            default_market = {
+                "stocks": {
+                    "TECH": {"name": "Tech Corp", "price": 100, "history": []},
+                    "FOOD": {"name": "Food Industries", "price": 50, "history": []},
+                    "ENERGY": {"name": "Energy Solutions", "price": 75, "history": []},
+                    "GAME": {"name": "Gaming Corp", "price": 120, "history": []},
+                    "AUTO": {"name": "Auto Motors", "price": 90, "history": []}
                 },
-                upsert=True
-            )
-            return result.modified_count > 0 or result.upserted_id is not None
+                "news": [],
+                "last_update": datetime.utcnow().isoformat()
+            }
+            with open(self.market_file, 'w') as f:
+                json.dump(default_market, f, indent=2)
+        
+        # Jobs file
+        try:
+            with open(self.jobs_file, 'r') as f:
+                json.load(f)
+        except:
+            default_jobs = {
+                "available_jobs": [
+                    {"name": "cashier", "pay": 50, "required_balance": 0, "cooldown": 3600, "emoji": "🏪"},
+                    {"name": "delivery", "pay": 100, "required_balance": 500, "cooldown": 3600, "emoji": "🚚"},
+                    {"name": "chef", "pay": 150, "required_balance": 1000, "cooldown": 5400, "emoji": "👨‍🍳"},
+                    {"name": "manager", "pay": 250, "required_balance": 2500, "cooldown": 7200, "emoji": "💼"},
+                    {"name": "engineer", "pay": 400, "required_balance": 5000, "cooldown": 10800, "emoji": "⚙️"},
+                    {"name": "ceo", "pay": 750, "required_balance": 10000, "cooldown": 14400, "emoji": "👔"}
+                ]
+            }
+            with open(self.jobs_file, 'w') as f:
+                json.dump(default_jobs, f, indent=2)
+        
+        # Cooldowns file
+        try:
+            with open(self.cooldowns_file, 'r') as f:
+                json.load(f)
+        except:
+            with open(self.cooldowns_file, 'w') as f:
+                json.dump({}, f, indent=2)
+    
+    def load_json(self, filepath):
+        """Load JSON data"""
+        try:
+            with open(filepath, 'r') as f:
+                return json.load(f)
         except Exception as e:
-            logging.error(f"Error adding to inventory for user {user_id}: {e}")
+            logger.error(f"Error loading {filepath}: {e}")
+            return {}
+    
+    def save_json(self, filepath, data):
+        """Save JSON data"""
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"Error saving {filepath}: {e}")
             return False
     
-    async def get_inventory(self, user_id: int) -> List[Dict]:
-        """Get user's inventory."""
-        try:
-            inventory_collection = self.bot.database_manager.get_collection('inventory')
-            if not inventory_collection:
-                return []
-            
-            cursor = inventory_collection.find({"user_id": str(user_id)})
-            inventory = list(cursor)
-            return inventory
-        except Exception as e:
-            logging.error(f"Error getting inventory for user {user_id}: {e}")
-            return []
-    
-    # -------------------- Utility Methods --------------------
-    def format_money(self, amount: int) -> str:
-        """Format money with commas."""
-        return f"${amount:,}"
-    
-    def format_time(self, seconds: float) -> str:
-        """Format seconds into readable time."""
-        if seconds < 60:
-            return f"{int(seconds)}s"
-        elif seconds < 3600:
-            minutes = int(seconds // 60)
-            seconds_remaining = int(seconds % 60)
-            return f"{minutes}m {seconds_remaining}s"
-        else:
-            hours = int(seconds // 3600)
-            minutes = int((seconds % 3600) // 60)
-            return f"{hours}h {minutes}m"
-    
-    def is_on_cooldown(self, user_id: int, action: str, cooldown_seconds: int) -> Tuple[bool, Optional[timedelta]]:
-        """Check if user is on cooldown for an action."""
-        if user_id not in self.cooldowns:
-            self.cooldowns[user_id] = {}
+    def get_user_data(self, user_id):
+        """Get or create user economy data"""
+        economy = self.load_json(self.economy_file)
+        user_id = str(user_id)
         
-        last_used = self.cooldowns[user_id].get(action)
-        if not last_used:
-            return False, None
+        if user_id not in economy:
+            economy[user_id] = {
+                "wallet": 0,
+                "bank": 0,
+                "total_earned": 0,
+                "inventory": {},
+                "stocks": {},
+                "current_job": None
+            }
+            self.save_json(self.economy_file, economy)
         
-        time_passed = datetime.now(timezone.utc) - last_used
-        if time_passed.total_seconds() < cooldown_seconds:
-            time_left = timedelta(seconds=cooldown_seconds) - time_passed
-            return True, time_left
+        return economy[user_id]
+    
+    def update_user_data(self, user_id, data):
+        """Update user economy data"""
+        economy = self.load_json(self.economy_file)
+        economy[str(user_id)] = data
+        return self.save_json(self.economy_file, economy)
+    
+    def check_cooldown(self, user_id, command_name):
+        """Check if user is on cooldown for a command"""
+        cooldowns = self.load_json(self.cooldowns_file)
+        user_id = str(user_id)
         
-        return False, None
-    
-    def set_cooldown(self, user_id: int, action: str):
-        """Set cooldown for an action."""
-        if user_id not in self.cooldowns:
-            self.cooldowns[user_id] = {}
+        if user_id not in cooldowns:
+            return None
         
-        self.cooldowns[user_id][action] = datetime.now(timezone.utc)
+        if command_name not in cooldowns[user_id]:
+            return None
+        
+        last_used = datetime.fromisoformat(cooldowns[user_id][command_name])
+        now = datetime.utcnow()
+        
+        return last_used, now
     
-    # -------------------- Background Tasks --------------------
-    @tasks.loop(hours=1)
-    async def cleanup_cooldowns(self):
-        """Clean up old cooldowns to prevent memory leaks."""
-        try:
-            current_time = datetime.now(timezone.utc)
-            expired_users = []
-            
-            for user_id, cooldowns in self.cooldowns.items():
-                # Remove expired cooldowns (older than 24 hours)
-                expired_actions = []
-                for action, last_used in cooldowns.items():
-                    if (current_time - last_used).total_seconds() > 86400:  # 24 hours
-                        expired_actions.append(action)
-                
-                for action in expired_actions:
-                    del cooldowns[action]
-                
-                # Remove user if no cooldowns left
-                if not cooldowns:
-                    expired_users.append(user_id)
-            
-            for user_id in expired_users:
-                del self.cooldowns[user_id]
-                
-        except Exception as e:
-            logging.error(f"Error in cleanup_cooldowns: {e}")
+    def set_cooldown(self, user_id, command_name, seconds):
+        """Set cooldown for a command"""
+        cooldowns = self.load_json(self.cooldowns_file)
+        user_id = str(user_id)
+        
+        if user_id not in cooldowns:
+            cooldowns[user_id] = {}
+        
+        cooldowns[user_id][command_name] = datetime.utcnow().isoformat()
+        self.save_json(self.cooldowns_file, cooldowns)
     
-    # -------------------- Balance Commands --------------------
-    @commands.command(name="balance", aliases=["bal", "money"])
-    async def balance(self, ctx: commands.Context, member: discord.Member = None):
-        """Check your or another user's balance."""
+    def format_time(self, seconds):
+        """Format seconds into readable time"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        
+        parts = []
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        if secs > 0 or not parts:
+            parts.append(f"{secs}s")
+        
+        return " ".join(parts)
+    
+    # ==================== BANKING COMMANDS ====================
+    
+    @commands.command(name='balance')
+    async def balance(self, ctx, member: discord.Member = None):
+        """Check your or someone's balance
+        
+        Usage: !balance [@user]
+        """
         member = member or ctx.author
-        user_data = await self.get_user_data(member.id)
+        user_data = self.get_user_data(member.id)
         
-        wallet = user_data.get('balance', 1000)
-        bank = user_data.get('bank_balance', 0)
+        wallet = user_data["wallet"]
+        bank = user_data["bank"]
         total = wallet + bank
         
         embed = discord.Embed(
             title=f"💰 {member.display_name}'s Balance",
-            color=discord.Color.gold(),
-            timestamp=datetime.now(timezone.utc)
+            color=discord.Color.gold()
         )
-        
-        embed.add_field(
-            name="💵 Wallet",
-            value=self.format_money(wallet),
-            inline=True
-        )
-        embed.add_field(
-            name="🏦 Bank",
-            value=self.format_money(bank),
-            inline=True
-        )
-        embed.add_field(
-            name="📈 Total",
-            value=f"**{self.format_money(total)}**",
-            inline=True
-        )
-        
-        # Wealth tier
-        if total >= 1000000:
-            tier = "👑 Emperor"
-            embed.color = discord.Color.gold()
-        elif total >= 500000:
-            tier = "💎 Tycoon"
-            embed.color = discord.Color.purple()
-        elif total >= 100000:
-            tier = "🏦 Millionaire" 
-            embed.color = discord.Color.blue()
-        elif total >= 50000:
-            tier = "💵 Wealthy"
-            embed.color = discord.Color.green()
-        elif total >= 10000:
-            tier = "🪙 Stable"
-            embed.color = discord.Color.green()
-        else:
-            tier = "🌱 Starting"
-            embed.color = discord.Color.light_grey()
-        
-        embed.add_field(name="🏆 Wealth Tier", value=tier, inline=False)
         embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="💵 Wallet", value=f"{wallet:,}£", inline=True)
+        embed.add_field(name="🏦 Bank", value=f"{bank:,}£", inline=True)
+        embed.add_field(name="💎 Total", value=f"{total:,}£", inline=True)
         
-        # Show database status in footer
-        db_status = "✅ MongoDB" if self.bot.database_manager.is_connected else "⚠️ Local"
-        embed.set_footer(text=f"Economy System | {db_status}")
+        if user_data.get("current_job"):
+            embed.add_field(name="💼 Current Job", value=user_data["current_job"].title(), inline=False)
         
-        await ctx.send(embed=embed)
-    
-    @commands.command(name="daily")
-    async def daily(self, ctx: commands.Context):
-        """Claim your daily reward."""
-        user_id = ctx.author.id
-        
-        # Check cooldown (24 hours)
-        on_cooldown, time_left = self.is_on_cooldown(user_id, "daily", 86400)
-        if on_cooldown:
-            embed = discord.Embed(
-                title="⏰ Daily Already Claimed",
-                description=f"You can claim your daily reward again in **{self.format_time(time_left.total_seconds())}**",
-                color=discord.Color.orange()
-            )
-            return await ctx.send(embed=embed)
-        
-        # Calculate reward with random bonus
-        base_reward = random.randint(500, 1000)
-        bonus = random.randint(0, 200)  # Random bonus
-        total_reward = base_reward + bonus
-        
-        # Update user balance
-        user_data = await self.get_user_data(user_id)
-        new_balance = user_data.get('balance', 1000) + total_reward
-        total_earned = user_data.get('total_earned', 0) + total_reward
-        
-        success = await self.update_user_data(user_id, {
-            "balance": new_balance,
-            "total_earned": total_earned,
-            "last_daily": datetime.now(timezone.utc).isoformat()
-        })
-        
-        if not success:
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to process daily reward. Please try again.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        # Set cooldown
-        self.set_cooldown(user_id, "daily")
-        
-        embed = discord.Embed(
-            title="🎁 Daily Reward Claimed!",
-            description=f"You received **{self.format_money(total_reward)}**!",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        if bonus > 0:
-            embed.add_field(name="Base Reward", value=self.format_money(base_reward), inline=True)
-            embed.add_field(name="Bonus", value=self.format_money(bonus), inline=True)
-        
-        embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=False)
-        embed.set_footer(text="Come back in 24 hours for your next reward!")
+        embed.set_footer(text=f"Requested by {ctx.author.name}")
         
         await ctx.send(embed=embed)
     
-    # -------------------- Work System --------------------
-    @commands.command(name="work")
-    async def work(self, ctx: commands.Context):
-        """Work to earn money with a cooldown."""
-        user_id = ctx.author.id
+    @commands.command(name='deposit')
+    async def deposit(self, ctx, amount: str):
+        """Deposit money to bank
         
-        # Check cooldown (1 hour)
-        on_cooldown, time_left = self.is_on_cooldown(user_id, "work", 3600)
-        if on_cooldown:
-            embed = discord.Embed(
-                title="⏰ Already Worked Recently",
-                description=f"You can work again in **{self.format_time(time_left.total_seconds())}**",
-                color=discord.Color.orange()
-            )
-            return await ctx.send(embed=embed)
-        
-        # Calculate work reward
-        job = random.choice(self.work_jobs)
-        base_earnings = random.randint(100, 300)
-        
-        # Critical work chance (10%)
-        is_critical = random.random() < 0.1
-        if is_critical:
-            base_earnings *= 2
-            bonus = random.randint(50, 100)
-        else:
-            bonus = random.randint(0, 50)
-        
-        total_earnings = base_earnings + bonus
-        
-        # Update user balance
-        user_data = await self.get_user_data(user_id)
-        new_balance = user_data.get('balance', 1000) + total_earnings
-        total_earned = user_data.get('total_earned', 0) + total_earnings
-        
-        success = await self.update_user_data(user_id, {
-            "balance": new_balance,
-            "total_earned": total_earned,
-            "last_work": datetime.now(timezone.utc).isoformat()
-        })
-        
-        if not success:
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to process work payment. Please try again.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        # Set cooldown
-        self.set_cooldown(user_id, "work")
-        
-        embed = discord.Embed(
-            title="💼 Work Complete!",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        if is_critical:
-            embed.description = f"🎯 **CRITICAL WORK!** You {job} and earned {self.format_money(total_earnings)}!"
-            embed.color = discord.Color.gold()
-        else:
-            embed.description = f"You {job} and earned {self.format_money(total_earnings)}!"
-        
-        embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=False)
-        embed.set_footer(text="You can work again in 1 hour!")
-        
-        await ctx.send(embed=embed)
-    
-    # -------------------- Crime System --------------------
-    @commands.command(name="crime")
-    async def crime(self, ctx: commands.Context):
-        """Commit a crime for high rewards but with risk of failure."""
-        user_id = ctx.author.id
-        
-        # Check cooldown (2 hours)
-        on_cooldown, time_left = self.is_on_cooldown(user_id, "crime", 7200)
-        if on_cooldown:
-            embed = discord.Embed(
-                title="⏰ Crime Cooldown",
-                description=f"You can attempt another crime in **{self.format_time(time_left.total_seconds())}**",
-                color=discord.Color.orange()
-            )
-            return await ctx.send(embed=embed)
-        
-        # Choose a crime
-        crime_name, min_reward, max_reward = random.choice(self.crime_activities)
-        success_chance = random.randint(1, 100)
-        
-        # Determine outcome (60% success rate)
-        if success_chance <= 60:
-            # Success
-            earnings = random.randint(min_reward, max_reward)
-            
-            user_data = await self.get_user_data(user_id)
-            new_balance = user_data.get('balance', 1000) + earnings
-            total_earned = user_data.get('total_earned', 0) + earnings
-            
-            success = await self.update_user_data(user_id, {
-                "balance": new_balance,
-                "total_earned": total_earned,
-                "last_crime": datetime.now(timezone.utc).isoformat()
-            })
-            
-            if not success:
-                embed = discord.Embed(
-                    title="❌ Error",
-                    description="Failed to process crime earnings. Please try again.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
-            
-            embed = discord.Embed(
-                title="🎭 Crime Successful!",
-                description=f"You successfully {crime_name} and earned **{self.format_money(earnings)}**!",
-                color=discord.Color.green(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=True)
-            
-        else:
-            # Failure - fine the user
-            fine = random.randint(50, 200)
-            
-            user_data = await self.get_user_data(user_id)
-            current_balance = user_data.get('balance', 1000)
-            actual_fine = min(fine, current_balance)  # Can't go negative
-            
-            if actual_fine > 0:
-                new_balance = current_balance - actual_fine
-                await self.update_user_data(user_id, {
-                    "balance": new_balance,
-                    "last_crime": datetime.now(timezone.utc).isoformat()
-                })
-            
-            embed = discord.Embed(
-                title="🚨 Crime Failed!",
-                description=f"You got caught trying to {crime_name}!",
-                color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            if actual_fine > 0:
-                embed.add_field(name="💸 Fine Paid", value=self.format_money(actual_fine), inline=True)
-                embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=True)
-            else:
-                embed.add_field(name="🎉 Lucky Break", value="You had no money to fine!", inline=True)
-        
-        # Set cooldown regardless of outcome
-        self.set_cooldown(user_id, "crime")
-        
-        await ctx.send(embed=embed)
-    
-    # -------------------- Banking System --------------------
-    @commands.command(name="deposit", aliases=["dep"])
-    async def deposit(self, ctx: commands.Context, amount: str = None):
-        """Deposit money into your bank account."""
-        user_id = ctx.author.id
-        user_data = await self.get_user_data(user_id)
-        
-        wallet = user_data.get('balance', 1000)
-        bank = user_data.get('bank_balance', 0)
-        
-        if amount is None:
-            embed = discord.Embed(
-                title="❌ Specify Amount",
-                description="Please specify an amount to deposit. Use `all` to deposit everything.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
+        Usage: !deposit <amount|all>
+        """
+        user_data = self.get_user_data(ctx.author.id)
+        wallet = user_data["wallet"]
         
         if amount.lower() == "all":
-            deposit_amount = wallet
-        elif amount.lower() == "half":
-            deposit_amount = wallet // 2
+            amount = wallet
         else:
             try:
-                deposit_amount = int(amount)
-                if deposit_amount <= 0:
-                    embed = discord.Embed(
-                        title="❌ Invalid Amount",
-                        description="Amount must be positive.",
-                        color=discord.Color.red()
-                    )
-                    return await ctx.send(embed=embed)
+                amount = int(amount)
             except ValueError:
                 embed = discord.Embed(
                     title="❌ Invalid Amount",
-                    description="Please specify a valid number, 'all', or 'half'.",
+                    description="Please provide a valid number or use `all`.",
                     color=discord.Color.red()
                 )
                 return await ctx.send(embed=embed)
         
-        if deposit_amount > wallet:
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be greater than 0.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        if wallet < amount:
             embed = discord.Embed(
                 title="❌ Insufficient Funds",
-                description=f"You only have {self.format_money(wallet)} in your wallet.",
+                description=f"You only have **{wallet:,}£** in your wallet.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        if deposit_amount == 0:
+        user_data["wallet"] -= amount
+        user_data["bank"] += amount
+        
+        if self.update_user_data(ctx.author.id, user_data):
             embed = discord.Embed(
-                title="❌ Nothing to Deposit",
-                description="You have no money in your wallet to deposit.",
-                color=discord.Color.red()
+                title="🏦 Deposit Successful",
+                description=f"Deposited **{amount:,}£** to your bank.",
+                color=discord.Color.green()
             )
-            return await ctx.send(embed=embed)
-        
-        # Update balances
-        new_wallet = wallet - deposit_amount
-        new_bank = bank + deposit_amount
-        
-        success = await self.update_user_data(user_id, {
-            "balance": new_wallet,
-            "bank_balance": new_bank
-        })
-        
-        if not success:
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to process deposit. Please try again.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        embed = discord.Embed(
-            title="🏦 Deposit Successful",
-            description=f"Deposited **{self.format_money(deposit_amount)}** into your bank account.",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.add_field(name="💵 New Wallet", value=self.format_money(new_wallet), inline=True)
-        embed.add_field(name="🏦 New Bank", value=self.format_money(new_bank), inline=True)
-        
-        await ctx.send(embed=embed)
+            embed.add_field(name="💵 New Wallet", value=f"{user_data['wallet']:,}£", inline=True)
+            embed.add_field(name="🏦 New Bank", value=f"{user_data['bank']:,}£", inline=True)
+            await ctx.send(embed=embed)
     
-    @commands.command(name="withdraw", aliases=["with"])
-    async def withdraw(self, ctx: commands.Context, amount: str = None):
-        """Withdraw money from your bank account."""
-        user_id = ctx.author.id
-        user_data = await self.get_user_data(user_id)
+    @commands.command(name='withdraw')
+    async def withdraw(self, ctx, amount: str):
+        """Withdraw money from bank
         
-        wallet = user_data.get('balance', 1000)
-        bank = user_data.get('bank_balance', 0)
-        
-        if amount is None:
-            embed = discord.Embed(
-                title="❌ Specify Amount",
-                description="Please specify an amount to withdraw. Use `all` to withdraw everything.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
+        Usage: !withdraw <amount|all>
+        """
+        user_data = self.get_user_data(ctx.author.id)
+        bank = user_data["bank"]
         
         if amount.lower() == "all":
-            withdraw_amount = bank
-        elif amount.lower() == "half":
-            withdraw_amount = bank // 2
+            amount = bank
         else:
             try:
-                withdraw_amount = int(amount)
-                if withdraw_amount <= 0:
-                    embed = discord.Embed(
-                        title="❌ Invalid Amount",
-                        description="Amount must be positive.",
-                        color=discord.Color.red()
-                    )
-                    return await ctx.send(embed=embed)
+                amount = int(amount)
             except ValueError:
                 embed = discord.Embed(
                     title="❌ Invalid Amount",
-                    description="Please specify a valid number, 'all', or 'half'.",
+                    description="Please provide a valid number or use `all`.",
                     color=discord.Color.red()
                 )
                 return await ctx.send(embed=embed)
         
-        if withdraw_amount > bank:
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be greater than 0.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        if bank < amount:
             embed = discord.Embed(
                 title="❌ Insufficient Funds",
-                description=f"You only have {self.format_money(bank)} in your bank.",
+                description=f"You only have **{bank:,}£** in your bank.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        if withdraw_amount == 0:
+        user_data["wallet"] += amount
+        user_data["bank"] -= amount
+        
+        if self.update_user_data(ctx.author.id, user_data):
             embed = discord.Embed(
-                title="❌ Nothing to Withdraw",
-                description="You have no money in your bank to withdraw.",
-                color=discord.Color.red()
+                title="🏦 Withdrawal Successful",
+                description=f"Withdrew **{amount:,}£** from your bank.",
+                color=discord.Color.green()
             )
-            return await ctx.send(embed=embed)
-        
-        # Update balances
-        new_wallet = wallet + withdraw_amount
-        new_bank = bank - withdraw_amount
-        
-        success = await self.update_user_data(user_id, {
-            "balance": new_wallet,
-            "bank_balance": new_bank
-        })
-        
-        if not success:
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to process withdrawal. Please try again.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        embed = discord.Embed(
-            title="🏦 Withdrawal Successful",
-            description=f"Withdrew **{self.format_money(withdraw_amount)}** from your bank account.",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.add_field(name="💵 New Wallet", value=self.format_money(new_wallet), inline=True)
-        embed.add_field(name="🏦 New Bank", value=self.format_money(new_bank), inline=True)
-        
-        await ctx.send(embed=embed)
+            embed.add_field(name="💵 New Wallet", value=f"{user_data['wallet']:,}£", inline=True)
+            embed.add_field(name="🏦 New Bank", value=f"{user_data['bank']:,}£", inline=True)
+            await ctx.send(embed=embed)
     
-    # -------------------- Transfer System --------------------
-    @commands.command(name="transfer", aliases=["pay", "give"])
-    async def transfer(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Transfer money to another user."""
+    @commands.command(name='pay')
+    async def pay(self, ctx, member: discord.Member, amount: int):
+        """Pay another user
+        
+        Usage: !pay @user <amount>
+        """
         if member == ctx.author:
             embed = discord.Embed(
-                title="❌ Invalid Target",
-                description="You cannot transfer money to yourself.",
+                title="❌ Invalid Action",
+                description="You cannot pay yourself!",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
         if member.bot:
             embed = discord.Embed(
-                title="❌ Invalid Target",
-                description="You cannot transfer money to bots.",
+                title="❌ Invalid Action",
+                description="You cannot pay bots!",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
@@ -692,273 +324,777 @@ class Economy(commands.Cog):
         if amount <= 0:
             embed = discord.Embed(
                 title="❌ Invalid Amount",
-                description="Amount must be positive.",
+                description="Amount must be greater than 0.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        # Get sender data
-        sender_data = await self.get_user_data(ctx.author.id)
-        sender_balance = sender_data.get('balance', 1000)
+        sender_data = self.get_user_data(ctx.author.id)
         
-        if amount > sender_balance:
+        if sender_data["wallet"] < amount:
             embed = discord.Embed(
                 title="❌ Insufficient Funds",
-                description=f"You only have {self.format_money(sender_balance)} in your wallet.",
+                description=f"You only have **{sender_data['wallet']:,}£** in your wallet.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        # Get receiver data
-        receiver_data = await self.get_user_data(member.id)
-        receiver_balance = receiver_data.get('balance', 1000)
+        receiver_data = self.get_user_data(member.id)
         
-        # Update balances
-        new_sender_balance = sender_balance - amount
-        new_receiver_balance = receiver_balance + amount
+        sender_data["wallet"] -= amount
+        receiver_data["wallet"] += amount
         
-        # Update sender
-        success1 = await self.update_user_data(ctx.author.id, {
-            "balance": new_sender_balance
-        })
-        
-        # Update receiver
-        success2 = await self.update_user_data(member.id, {
-            "balance": new_receiver_balance
-        })
-        
-        if not success1 or not success2:
-            embed = discord.Embed(
-                title="❌ Transfer Failed",
-                description="An error occurred during the transfer. Please try again.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
+        self.update_user_data(ctx.author.id, sender_data)
+        self.update_user_data(member.id, receiver_data)
         
         embed = discord.Embed(
-            title="✅ Transfer Successful",
-            description=f"You transferred **{self.format_money(amount)}** to {member.mention}.",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
+            title="💸 Payment Successful",
+            description=f"{ctx.author.mention} paid **{amount:,}£** to {member.mention}",
+            color=discord.Color.green()
         )
-        embed.add_field(name="Your New Balance", value=self.format_money(new_sender_balance), inline=True)
-        embed.add_field(name=f"{member.display_name}'s Balance", value=self.format_money(new_receiver_balance), inline=True)
+        embed.set_footer(text=f"Transaction ID: {ctx.message.id}")
         
         await ctx.send(embed=embed)
+        logger.info(f"{ctx.author} paid {amount}£ to {member}")
     
-    # -------------------- Shop System --------------------
-    @commands.command(name="shop")
-    async def shop(self, ctx: commands.Context, page: int = 1):
-        """Browse the shop items."""
-        items_per_page = 5
-        total_pages = math.ceil(len(self.shop_items) / items_per_page)
+    # ==================== JOB COMMANDS ====================
+    
+    @commands.command(name='jobs')
+    async def jobs(self, ctx):
+        """View available jobs
         
-        if page < 1 or page > total_pages:
-            embed = discord.Embed(
-                title="❌ Invalid Page",
-                description=f"Please choose a page between 1 and {total_pages}.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        start_idx = (page - 1) * items_per_page
-        end_idx = start_idx + items_per_page
-        page_items = self.shop_items[start_idx:end_idx]
+        Usage: !jobs
+        """
+        jobs_data = self.load_json(self.jobs_file)
+        user_data = self.get_user_data(ctx.author.id)
+        total_balance = user_data["wallet"] + user_data["bank"]
         
         embed = discord.Embed(
-            title="🛍️ Economy Shop",
-            description="Use `~~buy <item_id> [quantity]` to purchase an item.",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
+            title="💼 Available Jobs",
+            description="Work to earn money! Higher paying jobs require balance.",
+            color=discord.Color.blue()
         )
         
-        for item in page_items:
+        for job in jobs_data["available_jobs"]:
+            emoji = job.get("emoji", "💼")
+            name = job["name"].title()
+            pay = job["pay"]
+            required = job["required_balance"]
+            cooldown_hours = job["cooldown"] / 3600
+            
+            can_work = total_balance >= required
+            status = "✅ Available" if can_work else f"🔒 Requires {required:,}£"
+            
+            field_value = f"**Pay:** {pay:,}£\n**Required Balance:** {required:,}£\n**Cooldown:** {cooldown_hours:.1f}h\n**Status:** {status}"
+            
             embed.add_field(
-                name=f"{item['name']} - {self.format_money(item['price'])}",
-                value=f"**ID:** `{item['id']}`\n{item['description']} [{item['type'].title()}]",
-                inline=False
+                name=f"{emoji} {name}",
+                value=field_value,
+                inline=True
             )
         
-        embed.set_footer(text=f"Page {page}/{total_pages} • Use ~~shop <page> to browse more")
+        embed.add_field(
+            name="💰 Your Balance",
+            value=f"{total_balance:,}£",
+            inline=False
+        )
+        embed.set_footer(text="Use !work <job> to start working!")
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="buy")
-    async def buy(self, ctx: commands.Context, item_id: int = None, quantity: int = 1):
-        """Buy an item from the shop."""
-        if item_id is None:
+    @commands.command(name='work')
+    async def work(self, ctx, job_name: str = None):
+        """Work at a job to earn money
+        
+        Usage: !work <jobname>
+        Example: !work cashier
+        """
+        if not job_name:
             embed = discord.Embed(
-                title="❌ Specify Item",
-                description="Please specify an item ID to buy. Use `~~shop` to see available items.",
+                title="❌ Missing Job Name",
+                description="Please specify a job! Use `!jobs` to see available jobs.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        if quantity <= 0:
+        job_name = job_name.lower()
+        jobs_data = self.load_json(self.jobs_file)
+        
+        # Find the job
+        job = None
+        for j in jobs_data["available_jobs"]:
+            if j["name"] == job_name:
+                job = j
+                break
+        
+        if not job:
             embed = discord.Embed(
-                title="❌ Invalid Quantity",
-                description="Quantity must be at least 1.",
+                title="❌ Job Not Found",
+                description=f"Job `{job_name}` doesn't exist. Use `!jobs` to see available jobs.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        # Find the item
-        item = next((i for i in self.shop_items if i['id'] == item_id), None)
-        if not item:
+        user_data = self.get_user_data(ctx.author.id)
+        total_balance = user_data["wallet"] + user_data["bank"]
+        
+        # Check balance requirement
+        if total_balance < job["required_balance"]:
             embed = discord.Embed(
-                title="❌ Item Not Found",
-                description=f"No item found with ID {item_id}. Use `~~shop` to see available items.",
+                title="❌ Insufficient Balance",
+                description=f"You need **{job['required_balance']:,}£** total balance to work as a {job_name}.\nYou have **{total_balance:,}£**.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        total_cost = item['price'] * quantity
+        # Check cooldown
+        cooldown_data = self.check_cooldown(ctx.author.id, f"work_{job_name}")
+        if cooldown_data:
+            last_used, now = cooldown_data
+            time_passed = (now - last_used).total_seconds()
+            
+            if time_passed < job["cooldown"]:
+                remaining = job["cooldown"] - time_passed
+                embed = discord.Embed(
+                    title="⏰ On Cooldown",
+                    description=f"You can work as a {job_name} again in **{self.format_time(remaining)}**",
+                    color=discord.Color.orange()
+                )
+                return await ctx.send(embed=embed)
         
-        # Check if user has enough money
-        user_data = await self.get_user_data(ctx.author.id)
-        user_balance = user_data.get('balance', 1000)
+        # Work and earn money
+        earnings = job["pay"]
+        user_data["wallet"] += earnings
+        user_data["total_earned"] += earnings
+        user_data["current_job"] = job_name
         
-        if total_cost > user_balance:
+        self.update_user_data(ctx.author.id, user_data)
+        self.set_cooldown(ctx.author.id, f"work_{job_name}", job["cooldown"])
+        
+        work_messages = [
+            f"completed your shift as a {job_name}",
+            f"worked hard as a {job_name}",
+            f"finished your duties as a {job_name}",
+            f"successfully completed your work as a {job_name}"
+        ]
+        
+        embed = discord.Embed(
+            title=f"{job.get('emoji', '💼')} Work Complete!",
+            description=f"You {random.choice(work_messages)} and earned **{earnings:,}£**!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="💵 New Wallet", value=f"{user_data['wallet']:,}£", inline=True)
+        embed.add_field(name="📊 Total Earned", value=f"{user_data['total_earned']:,}£", inline=True)
+        embed.set_footer(text=f"Cooldown: {job['cooldown']/3600:.1f}h")
+        
+        await ctx.send(embed=embed)
+        logger.info(f"{ctx.author} worked as {job_name} and earned {earnings}£")
+    
+    # ==================== GAMBLING COMMANDS ====================
+    
+    @commands.command(name='coinflip')
+    async def coinflip(self, ctx, choice: str, amount: int):
+        """Flip a coin and gamble money
+        
+        Usage: !coinflip <heads|tails> <amount>
+        """
+        choice = choice.lower()
+        
+        if choice not in ["heads", "tails"]:
+            embed = discord.Embed(
+                title="❌ Invalid Choice",
+                description="Choose either `heads` or `tails`.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be greater than 0.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        user_data = self.get_user_data(ctx.author.id)
+        
+        if user_data["wallet"] < amount:
             embed = discord.Embed(
                 title="❌ Insufficient Funds",
-                description=f"You need {self.format_money(total_cost)} but only have {self.format_money(user_balance)}.",
+                description=f"You only have **{user_data['wallet']:,}£** in your wallet.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        result = random.choice(["heads", "tails"])
+        won = result == choice
+        
+        if won:
+            user_data["wallet"] += amount
+            user_data["total_earned"] += amount
+            color = discord.Color.green()
+            title = "🎉 You Won!"
+            description = f"The coin landed on **{result}**!\nYou won **{amount:,}£**!"
+        else:
+            user_data["wallet"] -= amount
+            color = discord.Color.red()
+            title = "💔 You Lost!"
+            description = f"The coin landed on **{result}**.\nYou lost **{amount:,}£**."
+        
+        self.update_user_data(ctx.author.id, user_data)
+        
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color
+        )
+        embed.add_field(name="💵 New Balance", value=f"{user_data['wallet']:,}£", inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name='dice')
+    async def dice(self, ctx, amount: int):
+        """Roll a dice and gamble
+        
+        Usage: !dice <amount>
+        Win 2x on 5-6, lose on 1-4
+        """
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be greater than 0.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        user_data = self.get_user_data(ctx.author.id)
+        
+        if user_data["wallet"] < amount:
+            embed = discord.Embed(
+                title="❌ Insufficient Funds",
+                description=f"You only have **{user_data['wallet']:,}£** in your wallet.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        roll = random.randint(1, 6)
+        won = roll >= 5
+        
+        if won:
+            winnings = amount * 2
+            user_data["wallet"] += winnings
+            user_data["total_earned"] += winnings
+            color = discord.Color.green()
+            title = "🎲 You Won!"
+            description = f"You rolled a **{roll}**!\nYou won **{winnings:,}£**!"
+        else:
+            user_data["wallet"] -= amount
+            color = discord.Color.red()
+            title = "🎲 You Lost!"
+            description = f"You rolled a **{roll}**.\nYou lost **{amount:,}£**."
+        
+        self.update_user_data(ctx.author.id, user_data)
+        
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color
+        )
+        embed.add_field(name="💵 New Balance", value=f"{user_data['wallet']:,}£", inline=True)
+        embed.set_footer(text="Roll 5-6 to win 2x your bet!")
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name='slots')
+    async def slots(self, ctx, amount: int):
+        """Play slot machine
+        
+        Usage: !slots <amount>
+        """
+        if amount <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amount must be greater than 0.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        user_data = self.get_user_data(ctx.author.id)
+        
+        if user_data["wallet"] < amount:
+            embed = discord.Embed(
+                title="❌ Insufficient Funds",
+                description=f"You only have **{user_data['wallet']:,}£** in your wallet.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        emojis = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣"]
+        slot1 = random.choice(emojis)
+        slot2 = random.choice(emojis)
+        slot3 = random.choice(emojis)
+        
+        # Calculate winnings
+        if slot1 == slot2 == slot3:
+            if slot1 == "💎":
+                multiplier = 10
+            elif slot1 == "7️⃣":
+                multiplier = 5
+            else:
+                multiplier = 3
+            winnings = amount * multiplier
+            user_data["wallet"] += winnings
+            user_data["total_earned"] += winnings
+            color = discord.Color.gold()
+            title = "🎰 JACKPOT!"
+            description = f"{slot1} {slot2} {slot3}\n\nYou won **{winnings:,}£** ({multiplier}x)!"
+        elif slot1 == slot2 or slot2 == slot3:
+            winnings = amount
+            user_data["wallet"] += winnings
+            user_data["total_earned"] += winnings
+            color = discord.Color.green()
+            title = "🎰 Small Win!"
+            description = f"{slot1} {slot2} {slot3}\n\nYou won **{winnings:,}£** (2x)!"
+        else:
+            user_data["wallet"] -= amount
+            color = discord.Color.red()
+            title = "🎰 You Lost!"
+            description = f"{slot1} {slot2} {slot3}\n\nYou lost **{amount:,}£**."
+        
+        self.update_user_data(ctx.author.id, user_data)
+        
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color
+        )
+        embed.add_field(name="💵 New Balance", value=f"{user_data['wallet']:,}£", inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    # ==================== MARKET COMMANDS ====================
+    
+    @commands.command(name='market')
+    async def market(self, ctx):
+        """View the stock market
+        
+        Usage: !market
+        """
+        market = self.load_json(self.market_file)
+        
+        embed = discord.Embed(
+            title="📊 Stock Market",
+            description="Current stock prices and trends",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        for symbol, stock in market["stocks"].items():
+            price = stock["price"]
+            name = stock["name"]
+            
+            # Calculate change if history exists
+            change_text = ""
+            if stock.get("history") and len(stock["history"]) > 1:
+                old_price = stock["history"][-2]["price"]
+                change = price - old_price
+                change_percent = (change / old_price * 100) if old_price > 0 else 0
+                
+                if change > 0:
+                    change_text = f"📈 +{change:,}£ ({change_percent:+.2f}%)"
+                elif change < 0:
+                    change_text = f"📉 {change:,}£ ({change_percent:.2f}%)"
+                else:
+                    change_text = "➡️ No change"
+            
+            field_value = f"**Price:** {price:,}£\n{change_text}" if change_text else f"**Price:** {price:,}£"
+            
+            embed.add_field(
+                name=f"{symbol} - {name}",
+                value=field_value,
+                inline=True
+            )
+        
+        embed.set_footer(text="Use !buy <symbol> <shares> to buy stocks")
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name='buy')
+    async def buy(self, ctx, symbol: str, shares: int):
+        """Buy stock shares
+        
+        Usage: !buy <symbol> <shares>
+        Example: !buy TECH 10
+        """
+        symbol = symbol.upper()
+        
+        if shares <= 0:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Number of shares must be greater than 0.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        market = self.load_json(self.market_file)
+        
+        if symbol not in market["stocks"]:
+            embed = discord.Embed(
+                title="❌ Stock Not Found",
+                description=f"Stock symbol `{symbol}` doesn't exist. Use `!market` to see available stocks.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        stock = market["stocks"][symbol]
+        total_cost = stock["price"] * shares
+        
+        user_data = self.get_user_data(ctx.author.id)
+        
+        if user_data["wallet"] < total_cost:
+            embed = discord.Embed(
+                title="❌ Insufficient Funds",
+                description=f"You need **{total_cost:,}£** to buy {shares} shares.\nYou have **{user_data['wallet']:,}£**.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
         # Process purchase
-        new_balance = user_balance - total_cost
+        user_data["wallet"] -= total_cost
         
-        # Update user balance
-        success1 = await self.update_user_data(ctx.author.id, {
-            "balance": new_balance
-        })
+        if symbol not in user_data["stocks"]:
+            user_data["stocks"][symbol] = 0
         
-        # Add to inventory
-        success2 = await self.add_to_inventory(ctx.author.id, item_id, quantity)
+        user_data["stocks"][symbol] += shares
         
-        if not success1 or not success2:
+        self.update_user_data(ctx.author.id, user_data)
+        
+        embed = discord.Embed(
+            title="📈 Purchase Successful",
+            description=f"Bought **{shares}** shares of **{stock['name']}** ({symbol})",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="💵 Cost", value=f"{total_cost:,}£", inline=True)
+        embed.add_field(name="💵 New Wallet", value=f"{user_data['wallet']:,}£", inline=True)
+        embed.add_field(name="📊 Total Shares", value=f"{user_data['stocks'][symbol]}", inline=True)
+        
+        await ctx.send(embed=embed)
+        logger.info(f"{ctx.author} bought {shares} shares of {symbol} for {total_cost}£")
+    
+    @commands.command(name='sell')
+    async def sell(self, ctx, symbol: str, shares: int):
+        """Sell stock shares
+        
+        Usage: !sell <symbol> <shares>
+        Example: !sell TECH 5
+        """
+        symbol = symbol.upper()
+        
+        if shares <= 0:
             embed = discord.Embed(
-                title="❌ Purchase Failed",
-                description="An error occurred during the purchase. Please try again.",
+                title="❌ Invalid Amount",
+                description="Number of shares must be greater than 0.",
                 color=discord.Color.red()
             )
             return await ctx.send(embed=embed)
         
-        embed = discord.Embed(
-            title="✅ Purchase Successful!",
-            description=f"You bought {quantity}x {item['name']} for {self.format_money(total_cost)}.",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.add_field(name="💵 New Balance", value=self.format_money(new_balance), inline=True)
-        embed.add_field(name="📦 Item Type", value=item['type'].title(), inline=True)
+        market = self.load_json(self.market_file)
         
-        await ctx.send(embed=embed)
-    
-    @commands.command(name="inventory", aliases=["inv", "items"])
-    async def inventory(self, ctx: commands.Context, member: discord.Member = None):
-        """View your or another user's inventory."""
-        member = member or ctx.author
-        inventory = await self.get_inventory(member.id)
-        
-        embed = discord.Embed(
-            title=f"🎒 {member.display_name}'s Inventory",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        if not inventory:
-            embed.description = "No items found. Visit the shop with `~~shop` to buy some!"
-        else:
-            total_items = 0
-            for item_data in inventory:
-                item_id = item_data['item_id']
-                quantity = item_data['quantity']
-                total_items += quantity
-                
-                # Find item details
-                item = next((i for i in self.shop_items if i['id'] == item_id), None)
-                if item:
-                    embed.add_field(
-                        name=f"{item['name']} x{quantity}",
-                        value=f"ID: {item_id} | Type: {item['type']}",
-                        inline=True
-                    )
-            
-            embed.set_footer(text=f"Total items: {total_items}")
-        
-        embed.set_thumbnail(url=member.display_avatar.url)
-        await ctx.send(embed=embed)
-    
-    # -------------------- Leaderboard --------------------
-    @commands.command(name="leaderboard", aliases=["lb", "rich"])
-    async def leaderboard(self, ctx: commands.Context):
-        """Display the wealth leaderboard."""
-        try:
-            users_collection = self.bot.database_manager.get_collection('users')
-            if not users_collection:
-                embed = discord.Embed(
-                    title="❌ Database Error",
-                    description="Database connection not available.",
-                    color=discord.Color.red()
-                )
-                return await ctx.send(embed=embed)
-            
-            # Get top 10 users by net worth
-            pipeline = [
-                {"$addFields": {
-                    "net_worth": {"$add": ["$balance", "$bank_balance"]}
-                }},
-                {"$sort": {"net_worth": -1}},
-                {"$limit": 10}
-            ]
-            
-            cursor = users_collection.aggregate(pipeline)
-            top_users = list(cursor)
-            
+        if symbol not in market["stocks"]:
             embed = discord.Embed(
-                title="🏆 Wealth Leaderboard",
-                color=discord.Color.gold(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            if not top_users:
-                embed.description = "No users found on the leaderboard yet."
-            else:
-                description = ""
-                for i, user_data in enumerate(top_users, 1):
-                    user_id = int(user_data['user_id'])
-                    user = self.bot.get_user(user_id)
-                    username = user.display_name if user else f"User {user_id}"
-                    net_worth = user_data.get('net_worth', 0)
-                    
-                    medal = ""
-                    if i == 1:
-                        medal = "🥇"
-                    elif i == 2:
-                        medal = "🥈" 
-                    elif i == 3:
-                        medal = "🥉"
-                    else:
-                        medal = f"**{i}.**"
-                    
-                    description += f"{medal} **{username}** - {self.format_money(net_worth)}\n"
-                
-                embed.description = description
-            
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logging.error(f"Error generating leaderboard: {e}")
-            embed = discord.Embed(
-                title="❌ Error",
-                description="An error occurred while generating the leaderboard.",
+                title="❌ Stock Not Found",
+                description=f"Stock symbol `{symbol}` doesn't exist.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            return await ctx.send(embed=embed)
+        
+        user_data = self.get_user_data(ctx.author.id)
+        
+        if symbol not in user_data["stocks"] or user_data["stocks"][symbol] < shares:
+            owned = user_data["stocks"].get(symbol, 0)
+            embed = discord.Embed(
+                title="❌ Insufficient Shares",
+                description=f"You don't have enough shares of {symbol}.\nYou own: **{owned}** shares",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        stock = market["stocks"][symbol]
+        total_value = stock["price"] * shares
+        
+        # Process sale
+        user_data["wallet"] += total_value
+        user_data["stocks"][symbol] -= shares
+        user_data["total_earned"] += total_value
+        
+        # Remove stock from inventory if 0 shares
+        if user_data["stocks"][symbol] == 0:
+            del user_data["stocks"][symbol]
+        
+        self.update_user_data(ctx.author.id, user_data)
+        
+        embed = discord.Embed(
+            title="📉 Sale Successful",
+            description=f"Sold **{shares}** shares of **{stock['name']}** ({symbol})",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="💰 Earned", value=f"{total_value:,}£", inline=True)
+        embed.add_field(name="💵 New Wallet", value=f"{user_data['wallet']:,}£", inline=True)
+        embed.add_field(name="📊 Remaining Shares", value=f"{user_data['stocks'].get(symbol, 0)}", inline=True)
+        
+        await ctx.send(embed=embed)
+        logger.info(f"{ctx.author} sold {shares} shares of {symbol} for {total_value}£")
+    
+    @commands.command(name='portfolio')
+    async def portfolio(self, ctx, member: discord.Member = None):
+        """View your stock portfolio
+        
+        Usage: !portfolio [@user]
+        """
+        member = member or ctx.author
+        user_data = self.get_user_data(member.id)
+        market = self.load_json(self.market_file)
+        
+        if not user_data["stocks"]:
+            embed = discord.Embed(
+                title="📊 Portfolio",
+                description=f"{member.display_name} doesn't own any stocks yet.",
+                color=discord.Color.blue()
+            )
+            return await ctx.send(embed=embed)
+        
+        embed = discord.Embed(
+            title=f"📊 {member.display_name}'s Portfolio",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        
+        total_value = 0
+        
+        for symbol, shares in user_data["stocks"].items():
+            if symbol in market["stocks"]:
+                stock = market["stocks"][symbol]
+                current_price = stock["price"]
+                value = current_price * shares
+                total_value += value
+                
+                embed.add_field(
+                    name=f"{symbol} - {stock['name']}",
+                    value=f"**Shares:** {shares}\n**Price:** {current_price:,}£\n**Value:** {value:,}£",
+                    inline=True
+                )
+        
+        embed.add_field(
+            name="💎 Total Portfolio Value",
+            value=f"{total_value:,}£",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"Requested by {ctx.author.name}")
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name='leaderboard')
+    async def leaderboard(self, ctx):
+        """View the wealth leaderboard
+        
+        Usage: !leaderboard
+        """
+        economy = self.load_json(self.economy_file)
+        market = self.load_json(self.market_file)
+        
+        # Calculate net worth for all users
+        user_wealth = []
+        
+        for user_id, data in economy.items():
+            wallet = data.get("wallet", 0)
+            bank = data.get("bank", 0)
+            
+            # Calculate stock value
+            stock_value = 0
+            for symbol, shares in data.get("stocks", {}).items():
+                if symbol in market["stocks"]:
+                    stock_value += market["stocks"][symbol]["price"] * shares
+            
+            net_worth = wallet + bank + stock_value
+            
+            if net_worth > 0:
+                user_wealth.append((int(user_id), net_worth))
+        
+        if not user_wealth:
+            embed = discord.Embed(
+                title="📊 Wealth Leaderboard",
+                description="No users have any wealth yet!",
+                color=discord.Color.blue()
+            )
+            return await ctx.send(embed=embed)
+        
+        # Sort by net worth
+        user_wealth.sort(key=lambda x: x[1], reverse=True)
+        
+        embed = discord.Embed(
+            title="📊 Wealth Leaderboard",
+            description="Top richest users on the server",
+            color=discord.Color.gold(),
+            timestamp=datetime.utcnow()
+        )
+        
+        medals = ["🥇", "🥈", "🥉"]
+        
+        for i, (user_id, net_worth) in enumerate(user_wealth[:10]):
+            user = self.bot.get_user(user_id)
+            username = user.display_name if user else f"User {user_id}"
+            
+            medal = medals[i] if i < 3 else f"`#{i+1}`"
+            
+            embed.add_field(
+                name=f"{medal} {username}",
+                value=f"💰 {net_worth:,}£",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Total users: {len(user_wealth)}")
+        
+        await ctx.send(embed=embed)
+    
+    # ==================== BACKGROUND TASKS ====================
+    
+    @tasks.loop(hours=1)
+    async def market_update(self):
+        """Update stock prices every hour"""
+        try:
+            market = self.load_json(self.market_file)
+            
+            for symbol, stock in market["stocks"].items():
+                old_price = stock["price"]
+                
+                # Random price change between -15% to +15%
+                change_percent = random.uniform(-0.15, 0.15)
+                new_price = int(old_price * (1 + change_percent))
+                
+                # Ensure price doesn't go below 10
+                new_price = max(10, new_price)
+                
+                stock["price"] = new_price
+                
+                # Add to history
+                if "history" not in stock:
+                    stock["history"] = []
+                
+                stock["history"].append({
+                    "price": new_price,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                
+                # Keep only last 100 entries
+                if len(stock["history"]) > 100:
+                    stock["history"] = stock["history"][-100:]
+            
+            market["last_update"] = datetime.utcnow().isoformat()
+            self.save_json(self.market_file, market)
+            
+            logger.info("Market prices updated")
+            
+        except Exception as e:
+            logger.error(f"Error updating market: {e}")
+    
+    @market_update.before_loop
+    async def before_market_update(self):
+        """Wait for bot to be ready before starting market updates"""
+        await self.bot.wait_until_ready()
+    
+    @tasks.loop(hours=3)
+    async def random_news(self):
+        """Send random market news every 3 hours"""
+        try:
+            await self.bot.wait_until_ready()
+            
+            # Find a channel to send news (first text channel with "economy" or "market" in name)
+            for guild in self.bot.guilds:
+                for channel in guild.text_channels:
+                    if any(word in channel.name.lower() for word in ["economy", "market", "stock", "trade"]):
+                        await self.send_market_news(channel)
+                        break
+                        
+        except Exception as e:
+            logger.error(f"Error sending random news: {e}")
+    
+    async def send_market_news(self, channel):
+        """Send market news to a channel"""
+        try:
+            market = self.load_json(self.market_file)
+            stocks = list(market["stocks"].keys())
+            
+            if not stocks:
+                return
+            
+            # Generate random news
+            news_templates = [
+                "{stock} surges as new product launches!",
+                "{stock} drops amid market uncertainty.",
+                "Analysts predict growth for {stock} this quarter.",
+                "{stock} announces record profits!",
+                "Market volatility affects {stock} prices.",
+                "{stock} expands to new markets!",
+                "Investors show strong interest in {stock}.",
+                "{stock} faces regulatory challenges.",
+                "Breakthrough technology boosts {stock}!",
+                "{stock} partners with major corporation."
+            ]
+            
+            stock_symbol = random.choice(stocks)
+            stock_name = market["stocks"][stock_symbol]["name"]
+            stock_price = market["stocks"][stock_symbol]["price"]
+            
+            news_text = random.choice(news_templates).format(stock=stock_name)
+            
+            embed = discord.Embed(
+                title="📰 Market News",
+                description=news_text,
+                color=discord.Color.gold(),
+                timestamp=datetime.utcnow()
+            )
+            embed.add_field(
+                name=f"{stock_symbol} - {stock_name}",
+                value=f"Current Price: **{stock_price:,}£**",
+                inline=False
+            )
+            embed.set_footer(text="Market Update")
+            
+            await channel.send(embed=embed)
+            
+            # Save to news history
+            if "news" not in market:
+                market["news"] = []
+            
+            market["news"].append({
+                "message": news_text,
+                "stock": stock_symbol,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            # Keep only last 50 news items
+            if len(market["news"]) > 50:
+                market["news"] = market["news"][-50:]
+            
+            self.save_json(self.market_file, market)
+            
+            logger.info(f"Market news sent to #{channel.name}")
+            
+        except Exception as e:
+            logger.error(f"Error sending market news: {e}")
+    
+    @random_news.before_loop
+    async def before_random_news(self):
+        """Wait for bot to be ready before sending news"""
+        await self.bot.wait_until_ready()
+    
+    def cog_unload(self):
+        """Clean up when cog is unloaded"""
+        self.market_update.cancel()
+        self.random_news.cancel()
 
 async def setup(bot):
-    """Setup function for the Economy cog."""
+    """Load the Economy cog"""
     await bot.add_cog(Economy(bot))
-    logging.info("✅ Economy cog loaded successfully")
+    logger.info("Economy cog loaded")
