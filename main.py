@@ -11,8 +11,10 @@ import aiohttp
 import sys
 import traceback
 
-# Fix module import issue
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add the current directory to Python path for Render
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
 # ---------------- Setup ----------------
 load_dotenv()
@@ -53,7 +55,7 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# ---------------- Manager Classes (Define FIRST) ----------------
+# ---------------- Manager Classes ----------------
 class ConfigManager:
     def __init__(self, filename="config.json"):
         self.filename = filename
@@ -65,19 +67,7 @@ class ConfigManager:
             "member_numbers": {},
             "prefix": "~~",
             "allowed_channels": [],
-            "mod_log_channel": None,
-            "economy_settings": {
-                "starting_balance": 1000,
-                "daily_min": 500,
-                "daily_max": 1500,
-                "work_min": 200,
-                "work_max": 800
-            },
-            "market_settings": {
-                "tax_rate": 0.05,
-                "max_listings": 10,
-                "listing_fee": 0
-            }
+            "mod_log_channel": None
         }
         self._ensure_config_exists()
     
@@ -94,9 +84,7 @@ class ConfigManager:
             try:
                 with open(self.filename, "r") as f:
                     config = json.load(f)
-                # Deep merge with defaults
-                merged_config = self._deep_merge(self.default_config.copy(), config)
-                return merged_config
+                return {**self.default_config, **config}
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 logging.error(f"Config load error: {e}, using defaults")
                 return self.default_config.copy()
@@ -105,7 +93,7 @@ class ConfigManager:
         """Save configuration to file with validation."""
         async with self.lock:
             try:
-                validated_data = self._deep_merge(self.default_config.copy(), data)
+                validated_data = {**self.default_config, **data}
                 with open(self.filename, "w") as f:
                     json.dump(validated_data, f, indent=2, ensure_ascii=False)
                 logging.info("Config saved successfully")
@@ -113,15 +101,6 @@ class ConfigManager:
             except Exception as e:
                 logging.error(f"Config save error: {e}")
                 return False
-    
-    def _deep_merge(self, base, update):
-        """Deep merge two dictionaries."""
-        for key, value in update.items():
-            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-                base[key] = self._deep_merge(base[key], value)
-            else:
-                base[key] = value
-        return base
 
 class MessageFilter:
     def __init__(self):
@@ -223,16 +202,14 @@ class DatabaseManager:
             # Users collection indexes
             self.db.users.create_index("user_id", unique=True)
             
-            # Market items collection indexes
-            self.db.market_items.create_index("item_id", unique=True)
-            self.db.market_items.create_index("seller_id")
-            self.db.market_items.create_index([("item_name", "text")])
-            
-            # Inventory collection indexes
-            self.db.inventory.create_index([("user_id", 1), ("item_name", 1)], unique=True)
-            
-            # Servers collection indexes
-            self.db.servers.create_index("server_id", unique=True)
+            # Market collections
+            self.db.market_positions.create_index([("user_id", 1), ("commodity", 1)])
+            self.db.market_trades.create_index([("user_id", 1), ("timestamp", -1)])
+            self.db.market_portfolios.create_index("user_id", unique=True)
+            self.db.price_history.create_index([("symbol", 1), ("timestamp", -1)])
+            self.db.market_state.create_index("_id", unique=True)
+            self.db.economic_state.create_index("_id", unique=True)
+            self.db.market_events.create_index([("active", 1), ("expires_at", 1)])
             
             logging.info("✅ Database indexes created")
         except Exception as e:
@@ -257,7 +234,7 @@ config_manager = ConfigManager()
 message_filter = MessageFilter()
 database_manager = DatabaseManager()
 
-# ---------------- Bot Class (Define AFTER managers) ----------------
+# ---------------- Bot Class ----------------
 class Bot(commands.Bot):
     """Custom bot class with additional utilities."""
     
@@ -269,7 +246,6 @@ class Bot(commands.Bot):
             case_insensitive=True
         )
         self.start_time = datetime.now(timezone.utc)
-        # Now ConfigManager and MessageFilter are defined, so we can use them
         self.config_manager = config_manager
         self.message_filter = message_filter
         self.database_manager = database_manager
@@ -288,7 +264,7 @@ class Bot(commands.Bot):
             status=discord.Status.online
         )
 
-# Create bot instance AFTER everything is defined
+# Create bot instance
 bot = Bot()
 
 # Register bot with web server for status monitoring
@@ -381,378 +357,125 @@ async def on_message(message):
     
     await bot.process_commands(message)
 
-# ---------------- Auto Cleaner Task ----------------
-@tasks.loop(minutes=1)
-async def auto_cleaner():
-    """Enhanced auto cleaner with better error handling and logging."""
+# ---------------- Enhanced Cog Loader ----------------
+async def load_cogs():
+    """Enhanced cog loader that handles nested folders properly."""
+    loaded_count = 0
+    
+    # Connect to database first
+    db_connected = await bot.database_manager.connect()
+    if not db_connected:
+        logging.error("❌ Database connection failed - some features may not work")
+    
+    # Load cogs from different locations
+    cog_paths = [
+        "cogs",           # Main cogs folder
+        "markets",        # Markets system
+    ]
+    
+    for cog_path in cog_paths:
+        if os.path.exists(cog_path):
+            logging.info(f"📁 Loading cogs from: {cog_path}")
+            for filename in os.listdir(cog_path):
+                if filename.endswith('.py') and filename != '__init__.py':
+                    cog_name = f"{cog_path}.{filename[:-3]}"
+                    try:
+                        await bot.load_extension(cog_name)
+                        loaded_count += 1
+                        logging.info(f"✅ Loaded cog: {cog_name}")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to load cog {cog_name}: {e}")
+                        # Print full traceback for debugging
+                        traceback.print_exc()
+        else:
+            logging.warning(f"⚠️ Cog path not found: {cog_path}")
+    
+    # Sync application commands
     try:
-        config = await bot.config_manager.load()
-        auto_delete_config = config.get("auto_delete", {})
-        
-        if not auto_delete_config:
-            return
-        
-        cleaned_total = 0
-        
-        for channel_id, settings in auto_delete_config.items():
-            if not settings.get("enabled", False):
-                continue
-            
-            channel = bot.get_channel(int(channel_id))
-            if not channel or not isinstance(channel, discord.TextChannel):
-                continue
-            
-            try:
-                deleted_count = await _clean_channel(channel, settings)
-                cleaned_total += deleted_count
-                
-                if deleted_count > 0:
-                    logging.info(f"Auto-cleaned {deleted_count} messages from #{channel.name}")
-                    
-            except discord.Forbidden:
-                logging.warning(f"No permission to clean channel #{channel.name}")
-            except Exception as e:
-                logging.error(f"Error cleaning channel {channel.id}: {e}")
-        
-        if cleaned_total > 0:
-            logging.info(f"Auto-cleaner completed: {cleaned_total} messages cleaned total")
-            
+        synced = await bot.tree.sync()
+        logging.info(f"✅ Synced {len(synced)} application command(s)")
     except Exception as e:
-        logging.error(f"Auto cleaner task error: {e}")
+        logging.error(f"❌ Failed to sync commands: {e}")
+    
+    logging.info(f"📊 Total cogs loaded: {loaded_count}")
 
-async def _clean_channel(channel, settings):
-    """Clean a single channel based on settings."""
-    deleted_count = 0
-    now = datetime.now(timezone.utc)
+async def reload_cogs():
+    """Reload all cogs."""
+    reloaded_count = 0
     
-    try:
-        messages = [msg async for msg in channel.history(limit=100, oldest_first=True)]
-    except discord.Forbidden:
-        raise
+    # Get all loaded cogs
+    for cog_name in list(bot.extensions.keys()):
+        try:
+            await bot.reload_extension(cog_name)
+            reloaded_count += 1
+            logging.info(f"🔄 Reloaded cog: {cog_name}")
+        except Exception as e:
+            logging.error(f"❌ Failed to reload cog {cog_name}: {e}")
     
-    max_age = settings.get("max_age")
-    if max_age:
-        for msg in messages:
-            age_seconds = (now - msg.created_at).total_seconds()
-            if age_seconds > max_age:
-                try:
-                    await msg.delete()
-                    deleted_count += 1
-                    await asyncio.sleep(0.5)
-                except discord.NotFound:
-                    pass
-                except Exception as e:
-                    logging.warning(f"Error deleting old message: {e}")
-    
-    max_messages = settings.get("max_messages")
-    if max_messages and len(messages) > max_messages:
-        to_delete = messages[:len(messages) - max_messages]
-        for msg in to_delete:
-            try:
-                await msg.delete()
-                deleted_count += 1
-                await asyncio.sleep(0.5)
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                logging.warning(f"Error deleting excess message: {e}")
-    
-    return deleted_count
+    logging.info(f"📊 Cogs reloaded: {reloaded_count}")
 
-@auto_cleaner.before_loop
-async def before_auto_cleaner():
-    """Wait for bot to be ready before starting auto cleaner."""
-    await bot.wait_until_ready()
+# ---------------- Bot Events ----------------
+@bot.event
+async def setup_hook():
+    """Enhanced setup hook with proper cog loading."""
+    logging.info("🔧 Starting bot setup...")
+    
+    # Create necessary directories
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("cogs", exist_ok=True)
+    os.makedirs("markets", exist_ok=True)
+    os.makedirs("markets/config", exist_ok=True)
+    logging.info("📁 Directories initialized")
+    
+    await load_cogs()
+    logging.info("✅ Setup hook completed")
 
-# ---------------- Enhanced Help System ----------------
-@bot.command(name="help")
-async def help_command(ctx: commands.Context, category: str = None):
-    """Main help command with categories. Use ~~help admin or ~~help economy."""
-    if category and category.lower() in ["admin", "economy", "market"]:
-        await _show_category_help(ctx, category.lower())
-    else:
-        await _show_general_help(ctx)
-
-async def _show_general_help(ctx: commands.Context):
-    """Show general help with categorized commands."""
-    embed = discord.Embed(
-        title="🤖 Bot Help - Command Categories",
-        description="Use `~~help <category>` for specific command lists.\n\n**Available Categories:**",
-        color=discord.Color.blue()
-    )
+@bot.event
+async def on_ready():
+    """Enhanced on_ready with more detailed startup info."""
+    logging.info(f"✅ Bot is ready as {bot.user} (ID: {bot.user.id})")
+    logging.info(f"📊 Connected to {len(bot.guilds)} guild(s)")
     
-    # General Commands
-    general_commands = [
-        "`help` - Shows this message",
-        "`ping` - Check bot latency",
-        "`hello` - Say hello to the bot",
-        "`status` - Check bot and database status"
-    ]
+    # Log guild names
+    for guild in bot.guilds:
+        logging.info(f"   - {guild.name} (ID: {guild.id}, Members: {guild.member_count})")
     
-    embed.add_field(
-        name="🔧 General Commands",
-        value="\n".join(general_commands),
-        inline=False
-    )
-    
-    # Category Overview
-    embed.add_field(
-        name="📁 Command Categories",
-        value=(
-            "**~~admin** - Moderation and server management\n"
-            "**~~economy** - Money, games, and economy system\n"
-            "**~~market** - Commodity trading and markets\n"
-            "**~~help <category>** - Show specific category help"
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="~~help | Economy & Markets"
         ),
-        inline=False
+        status=discord.Status.online
     )
-    
-    embed.add_field(
-        name="💡 Quick Start",
-        value=(
-            "• Use `~~economy` to see money commands\n"
-            "• Use `~~admin` for moderation tools\n"
-            "• Use `~~market` for commodity trading\n"
-            "• Most commands have cooldowns for balance"
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text=f"Use ~~help admin, ~~help economy, or ~~help market for detailed commands")
-    await ctx.send(embed=embed)
 
-async def _show_category_help(ctx: commands.Context, category: str):
-    """Show help for a specific category."""
-    if category == "admin":
-        await _show_admin_help(ctx)
-    elif category == "economy":
-        await _show_economy_help(ctx)
-    elif category == "market":
-        await _show_market_help(ctx)
-
-async def _show_admin_help(ctx: commands.Context):
-    """Show admin/moderation commands."""
+# ---------------- Utility Commands ----------------
+@bot.command(name="ping", brief="Check bot latency")
+async def ping(ctx):
+    """Check the bot's latency and response time."""
+    start_time = ctx.message.created_at
+    msg = await ctx.send("🏓 Pinging...")
+    end_time = msg.created_at
+    
+    bot_latency = round(bot.latency * 1000)
+    response_time = round((end_time - start_time).total_seconds() * 1000)
+    
     embed = discord.Embed(
-        title="🛡️ Admin & Moderation Commands",
-        description="Server management and moderation tools.",
-        color=discord.Color.red()
-    )
-    
-    # Moderation Commands
-    moderation_cmds = [
-        "`kick <member> [reason]` - Kick a member",
-        "`ban <member> [reason]` - Ban a member", 
-        "`unban <user_id> [reason]` - Unban a user",
-        "`mute <member> [reason]` - Mute a member",
-        "`unmute <member> [reason]` - Unmute a member",
-        "`clear <amount>` - Delete messages",
-        "`clearuser <member> <amount>` - Delete user messages"
-    ]
-    
-    embed.add_field(
-        name="🔨 Moderation",
-        value="\n".join(moderation_cmds),
-        inline=False
-    )
-    
-    # Utility Commands
-    utility_cmds = [
-        "`serverinfo` - Show server information",
-        "`userinfo [member]` - Show user information",
-        "`setlogchannel [channel]` - Set mod log channel"
-    ]
-    
-    embed.add_field(
-        name="📊 Utility",
-        value="\n".join(utility_cmds),
-        inline=False
-    )
-    
-    # Bot Management
-    bot_cmds = [
-        "`reloadcogs` - Reload all cogs",
-        "`setstatus <status>` - Change bot status"
-    ]
-    
-    embed.add_field(
-        name="⚙️ Bot Management",
-        value="\n".join(bot_cmds),
-        inline=False
-    )
-    
-    # Economy Admin Commands
-    economy_admin = [
-        "`economygive <member> <amount>` - Give money to user",
-        "`economytake <member> <amount>` - Take money from user", 
-        "`economyset <member> <wallet> <bank>` - Set user balance",
-        "`economyreset <member>` - Reset user economy data",
-        "`economystats` - View economy statistics"
-    ]
-    
-    embed.add_field(
-        name="💰 Economy Admin",
-        value="\n".join(economy_admin),
-        inline=False
-    )
-    
-    embed.set_footer(text="Admin commands require bot-admin role or Administrator permissions")
-    await ctx.send(embed=embed)
-
-async def _show_economy_help(ctx: commands.Context):
-    """Show economy and game commands."""
-    embed = discord.Embed(
-        title="💰 Economy & Games Commands", 
-        description="Money management, games, and earning opportunities.",
-        color=discord.Color.gold()
-    )
-    
-    # Balance Management
-    balance_cmds = [
-        "`balance [member]` - Check balance",
-        "`wallet [member]` - Check wallet only", 
-        "`bank [member]` - Check bank only",
-        "`networth [member]` - Check total net worth",
-        "`deposit <amount|all|max>` - Deposit to bank",
-        "`withdraw <amount|all>` - Withdraw from bank",
-        "`pay <member> <amount>` - Pay another user"
-    ]
-    
-    embed.add_field(
-        name="💵 Balance Management",
-        value="\n".join(balance_cmds),
-        inline=False
-    )
-    
-    # Earning Commands
-    earning_cmds = [
-        "`daily` - Claim daily reward (24h cooldown)",
-        "`work` - Work for money (1h cooldown)", 
-        "`crime` - High-risk crime (2h cooldown)"
-    ]
-    
-    embed.add_field(
-        name="💼 Earning Money",
-        value="\n".join(earning_cmds),
-        inline=False
-    )
-    
-    # Games & Gambling
-    game_cmds = [
-        "`flip <heads/tails> <bet>` - Coin flip game",
-        "`dice <bet>` - Dice rolling game", 
-        "`rps <rock/paper/scissors> <bet>` - Rock Paper Scissors",
-        "`guess <bet>` - Number guessing game",
-        "`blackjack <bet>` - Blackjack card game"
-    ]
-    
-    embed.add_field(
-        name="🎮 Games & Gambling", 
-        value="\n".join(game_cmds),
-        inline=False
-    )
-    
-    # Shop & Items
-    shop_cmds = [
-        "`shop` - Browse the shop",
-        "`buy <item_id>` - Purchase an item", 
-        "`inventory [member]` - View inventory",
-        "`use <item_name>` - Use a consumable item"
-    ]
-    
-    embed.add_field(
-        name="🛍️ Shop & Items",
-        value="\n".join(shop_cmds),
-        inline=False
-    )
-    
-    # Social & Leaderboards
-    social_cmds = [
-        "`leaderboard` - Wealth leaderboard", 
-        "`pay <member> <amount>` - Pay another user"
-    ]
-    
-    embed.add_field(
-        name="👥 Social & Leaderboards",
-        value="\n".join(social_cmds),
-        inline=False
-    )
-    
-    embed.set_footer(text="Most commands have cooldowns - check individual command help")
-    await ctx.send(embed=embed)
-
-async def _show_market_help(ctx: commands.Context):
-    """Show market trading commands."""
-    embed = discord.Embed(
-        title="🏛️ Market Trading Commands",
-        description="Realistic commodity trading with economic simulation.",
+        title="🏓 Pong!",
         color=discord.Color.green()
     )
+    embed.add_field(name="Bot Latency", value=f"{bot_latency}ms", inline=True)
+    embed.add_field(name="Response Time", value=f"{response_time}ms", inline=True)
     
-    # Market Commands
-    market_cmds = [
-        "`market` - Main market command overview",
-        "`market prices` - View current commodity prices",
-        "`market buy <commodity> <quantity>` - Buy/Long a commodity",
-        "`market sell <commodity> <quantity>` - Sell/Short a commodity",
-        "`market close <commodity>` - Close an open position",
-        "`market portfolio` - View your trading portfolio",
-        "`market info <commodity>` - Detailed commodity information",
-        "`market economy` - View economic indicators"
-    ]
-    
-    embed.add_field(
-        name="📊 Trading Commands",
-        value="\n".join(market_cmds),
-        inline=False
-    )
-    
-    # Available Commodities
-    commodities_info = [
-        "**GOLD** - Precious metal, safe haven asset",
-        "**SILVER** - Industrial and precious metal", 
-        "**OIL** - Global energy benchmark",
-        "**COPPER** - Industrial metal, economic indicator"
-    ]
-    
-    embed.add_field(
-        name="💎 Available Commodities",
-        value="\n".join(commodities_info),
-        inline=False
-    )
-    
-    # Trading Basics
-    embed.add_field(
-        name="💡 Trading Basics",
-        value=(
-            "• **Buy** = Go long (profit if price rises)\n"
-            "• **Sell** = Go short (profit if price falls)\n" 
-            "• Prices update every 5 seconds automatically\n"
-            "• Economic events affect all markets\n"
-            "• Start with $10,000 trading capital"
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text="Market data simulates real economic factors and volatility")
-    await ctx.send(embed=embed)
+    await msg.edit(content=None, embed=embed)
 
-# ---------------- New Category Help Commands ----------------
-@bot.command(name="admin")
-async def admin_help(ctx: commands.Context):
-    """Direct admin help command."""
-    await _show_admin_help(ctx)
+@bot.command(name="reload", brief="Reload all cogs")
+@commands.has_permissions(administrator=True)
+async def reload(ctx):
+    """Reload all cogs (Admin only)."""
+    msg = await ctx.send("🔄 Reloading cogs...")
+    await reload_cogs()
+    await msg.edit(content="✅ All cogs reloaded successfully!")
 
-@bot.command(name="economy")
-async def economy_help(ctx: commands.Context):
-    """Direct economy help command."""
-    await _show_economy_help(ctx)
-
-@bot.command(name="market")
-async def market_help(ctx: commands.Context):
-    """Direct market help command."""
-    await _show_market_help(ctx)
-
-# ---------------- Status Command ----------------
 @bot.command(name="status")
 async def status_command(ctx: commands.Context):
     """Check bot and database status."""
@@ -805,141 +528,6 @@ async def status_command(ctx: commands.Context):
     
     await ctx.send(embed=embed)
 
-# ---------------- Cog Loader ----------------
-async def load_cogs():
-    """Enhanced cog loader with dependency checking."""
-    loaded_count = 0
-    
-    # Connect to database first
-    db_connected = await bot.database_manager.connect()
-    if not db_connected:
-        logging.error("❌ Database connection failed - some features may not work")
-    
-    # Load admin cog
-    try:
-        await bot.load_extension("cogs.admin")
-        logging.info("✅ Loaded cog: admin")
-        loaded_count += 1
-    except Exception as e:
-        logging.error(f"❌ Failed to load admin cog: {e}")
-    
-    # Load economy cog
-    try:
-        await bot.load_extension("cogs.economy")
-        logging.info("✅ Loaded cog: economy")
-        loaded_count += 1
-    except Exception as e:
-        logging.error(f"❌ Failed to load economy cog: {e}")
-    
-    # Load market cog
-    try:
-        await bot.load_extension("cogs.market")
-        logging.info("✅ Loaded cog: market")
-        loaded_count += 1
-    except Exception as e:
-        logging.error(f"❌ Failed to load market cog: {e}")
-    
-    # Load test cog if exists
-    try:
-        await bot.load_extension("cogs.test")
-        logging.info("✅ Loaded cog: test")
-        loaded_count += 1
-    except Exception as e:
-        logging.debug(f"Test cog not loaded: {e}")
-    
-    logging.info(f"📊 Cogs loaded: {loaded_count}/4")
-
-async def reload_cogs():
-    """Reload all cogs."""
-    reloaded_count = 0
-    
-    for cog_name in ["admin", "economy", "market", "test"]:
-        try:
-            await bot.reload_extension(f"cogs.{cog_name}")
-            logging.info(f"🔄 Reloaded cog: {cog_name}")
-            reloaded_count += 1
-        except Exception as e:
-            logging.error(f"❌ Failed to reload cog {cog_name}: {e}")
-    
-    logging.info(f"📊 Cogs reloaded: {reloaded_count}/4")
-
-# ---------------- Bot Events ----------------
-@bot.event
-async def setup_hook():
-    """Enhanced setup hook with data directory initialization."""
-    logging.info("🔧 Starting bot setup...")
-    
-    # Create necessary directories
-    os.makedirs("data", exist_ok=True)
-    os.makedirs("cogs", exist_ok=True)
-    logging.info("📁 Directories initialized")
-    
-    await load_cogs()
-    auto_cleaner.start()
-    
-    logging.info("✅ Setup hook completed")
-
-@bot.event
-async def on_ready():
-    """Enhanced on_ready with more detailed startup info."""
-    logging.info(f"✅ Bot is ready as {bot.user} (ID: {bot.user.id})")
-    logging.info(f"📊 Connected to {len(bot.guilds)} guild(s)")
-    
-    # Log guild names
-    for guild in bot.guilds:
-        logging.info(f"   - {guild.name} (ID: {guild.id}, Members: {guild.member_count})")
-    
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="~~help | Economy & Markets"
-        ),
-        status=discord.Status.online
-    )
-
-@bot.event
-async def on_guild_join(guild):
-    """Log when bot joins a new guild."""
-    logging.info(f"➕ Joined guild: {guild.name} (ID: {guild.id}) with {guild.member_count} members")
-
-@bot.event
-async def on_guild_remove(guild):
-    """Log when bot leaves a guild."""
-    logging.info(f"➖ Left guild: {guild.name} (ID: {guild.id})")
-
-# ---------------- Utility Commands ----------------
-@bot.command(name="ping", brief="Check bot latency")
-async def ping(ctx):
-    """Check the bot's latency and response time."""
-    start_time = ctx.message.created_at
-    msg = await ctx.send("🏓 Pinging...")
-    end_time = msg.created_at
-    
-    bot_latency = round(bot.latency * 1000)
-    response_time = round((end_time - start_time).total_seconds() * 1000)
-    
-    embed = discord.Embed(
-        title="🏓 Pong!",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Bot Latency", value=f"{bot_latency}ms", inline=True)
-    embed.add_field(name="Response Time", value=f"{response_time}ms", inline=True)
-    
-    await msg.edit(content=None, embed=embed)
-
-@bot.command(name="reload", brief="Reload all cogs")
-@commands.has_permissions(administrator=True)
-async def reload(ctx):
-    """Reload all cogs (Admin only)."""
-    msg = await ctx.send("🔄 Reloading cogs...")
-    await reload_cogs()
-    await msg.edit(content="✅ All cogs reloaded successfully!")
-
-@bot.command(name="hello")
-async def hello(ctx):
-    """Say hello to the bot"""
-    await ctx.send(f'Hello {ctx.author.mention}! 👋')
-
 # ---------------- Keep Alive ----------------
 if KEEP_ALIVE:
     try:
@@ -956,9 +544,13 @@ if KEEP_ALIVE:
 if __name__ == "__main__":
     try:
         logging.info("🚀 Starting bot...")
+        logging.info(f"📁 Current directory: {os.getcwd()}")
+        logging.info(f"📁 Python path: {sys.path}")
+        
         if not TOKEN:
             logging.critical("❌ DISCORD_TOKEN environment variable not set!")
             exit(1)
+            
         bot.run(TOKEN)
     except KeyboardInterrupt:
         logging.info("⏹️ Bot stopped by user")
