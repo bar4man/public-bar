@@ -1,547 +1,835 @@
 import discord
 from discord.ext import commands
 import json
+import os
+import asyncio
 import logging
-from datetime import datetime
-
-logger = logging.getLogger('discord_bot')
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List
+import aiofiles
 
 class Admin(commands.Cog):
-    """Admin commands - requires bot-admin role"""
+    """Enhanced administrative commands for bot management and moderation."""
     
     def __init__(self, bot):
         self.bot = bot
-        self.admin_role = "bot-admin"
-        self.economy_file = "economy.json"
-        self.market_file = "market.json"
+        self.log_channel_id: Optional[int] = None
+        self.mod_actions: Dict[str, List[Dict]] = {}
+        self._initialize_mod_logs()
     
-    def has_admin_role(self, member):
-        """Check if member has bot-admin role"""
-        return discord.utils.get(member.roles, name=self.admin_role) is not None
+    def _initialize_mod_logs(self):
+        """Initialize moderation logs file."""
+        if not os.path.exists("mod_logs.json"):
+            with open("mod_logs.json", "w") as f:
+                json.dump({}, f, indent=2)
     
-    def load_economy(self):
-        """Load economy data"""
-        try:
-            with open(self.economy_file, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading economy: {e}")
-            return {}
+    # -------------------- Permission System --------------------
+    def is_admin(self, member: discord.Member) -> bool:
+        """Check if member has admin permissions."""
+        return (member.guild_permissions.administrator or 
+                discord.utils.get(member.roles, name="bot-admin") is not None)
     
-    def save_economy(self, data):
-        """Save economy data"""
-        try:
-            with open(self.economy_file, 'w') as f:
-                json.dump(data, f, indent=2)
-            return True
-        except Exception as e:
-            logger.error(f"Error saving economy: {e}")
-            return False
+    def is_moderator(self, member: discord.Member) -> bool:
+        """Check if member has moderator permissions."""
+        return (self.is_admin(member) or
+                discord.utils.get(member.roles, name="moderator") is not None)
     
-    def load_market(self):
-        """Load market data"""
-        try:
-            with open(self.market_file, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading market: {e}")
-            return {}
-    
-    def save_market(self, data):
-        """Save market data"""
-        try:
-            with open(self.market_file, 'w') as f:
-                json.dump(data, f, indent=2)
-            return True
-        except Exception as e:
-            logger.error(f"Error saving market: {e}")
-            return False
-    
-    async def cog_check(self, ctx):
-        """Check if user has admin role for all commands in this cog"""
-        if not self.has_admin_role(ctx.author):
+    async def cog_check(self, ctx: commands.Context) -> bool:
+        """Check permissions for all commands in this cog."""
+        if not self.is_admin(ctx.author):
             embed = discord.Embed(
                 title="🔒 Admin Only",
-                description=f"This command requires the `{self.admin_role}` role.",
+                description="This command requires the `bot-admin` role or Administrator permissions.",
                 color=discord.Color.red()
             )
-            await ctx.send(embed=embed)
+            await ctx.send(embed=embed, delete_after=10)
             return False
         return True
     
-    @commands.command(name='addmoney')
-    async def addmoney(self, ctx, member: discord.Member, amount: int):
-        """Add money to a user's wallet
-        
-        Usage: !addmoney @user <amount>
-        Example: !addmoney @john 1000
-        """
-        if amount <= 0:
-            embed = discord.Embed(
-                title="❌ Invalid Amount",
-                description="Amount must be greater than 0.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        if member.bot:
-            embed = discord.Embed(
-                title="❌ Invalid Target",
-                description="Cannot add money to bots.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        economy = self.load_economy()
-        user_id = str(member.id)
-        
-        if user_id not in economy:
-            economy[user_id] = {
-                "wallet": 0,
-                "bank": 0,
-                "total_earned": 0,
-                "inventory": {},
-                "stocks": {}
-            }
-        
-        old_balance = economy[user_id]["wallet"]
-        economy[user_id]["wallet"] += amount
-        new_balance = economy[user_id]["wallet"]
-        
-        if self.save_economy(economy):
-            embed = discord.Embed(
-                title="💰 Money Added",
-                description=f"Added **{amount:,}£** to {member.mention}",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="Previous Balance", value=f"{old_balance:,}£", inline=True)
-            embed.add_field(name="New Balance", value=f"{new_balance:,}£", inline=True)
-            embed.set_footer(text=f"Action by {ctx.author.name}")
-            
-            await ctx.send(embed=embed)
-            logger.info(f"{ctx.author} added {amount}£ to {member}")
-        else:
-            embed = discord.Embed(
-                title="⚠️ Error",
-                description="Failed to save economy data.",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-    
-    @commands.command(name='removemoney')
-    async def removemoney(self, ctx, member: discord.Member, amount: int):
-        """Remove money from a user's wallet
-        
-        Usage: !removemoney @user <amount>
-        Example: !removemoney @john 500
-        """
-        if amount <= 0:
-            embed = discord.Embed(
-                title="❌ Invalid Amount",
-                description="Amount must be greater than 0.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        if member.bot:
-            embed = discord.Embed(
-                title="❌ Invalid Target",
-                description="Cannot remove money from bots.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        economy = self.load_economy()
-        user_id = str(member.id)
-        
-        if user_id not in economy:
-            economy[user_id] = {
-                "wallet": 0,
-                "bank": 0,
-                "total_earned": 0,
-                "inventory": {},
-                "stocks": {}
-            }
-        
-        old_balance = economy[user_id]["wallet"]
-        economy[user_id]["wallet"] = max(0, economy[user_id]["wallet"] - amount)
-        new_balance = economy[user_id]["wallet"]
-        actual_removed = old_balance - new_balance
-        
-        if self.save_economy(economy):
-            embed = discord.Embed(
-                title="💸 Money Removed",
-                description=f"Removed **{actual_removed:,}£** from {member.mention}",
-                color=discord.Color.orange()
-            )
-            embed.add_field(name="Previous Balance", value=f"{old_balance:,}£", inline=True)
-            embed.add_field(name="New Balance", value=f"{new_balance:,}£", inline=True)
-            
-            if actual_removed < amount:
-                embed.add_field(
-                    name="⚠️ Note",
-                    value=f"User only had {old_balance:,}£",
-                    inline=False
-                )
-            
-            embed.set_footer(text=f"Action by {ctx.author.name}")
-            
-            await ctx.send(embed=embed)
-            logger.info(f"{ctx.author} removed {actual_removed}£ from {member}")
-        else:
-            embed = discord.Embed(
-                title="⚠️ Error",
-                description="Failed to save economy data.",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-    
-    @commands.command(name='setmoney')
-    async def setmoney(self, ctx, member: discord.Member, amount: int):
-        """Set a user's wallet balance
-        
-        Usage: !setmoney @user <amount>
-        Example: !setmoney @john 5000
-        """
-        if amount < 0:
-            embed = discord.Embed(
-                title="❌ Invalid Amount",
-                description="Amount cannot be negative.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        if member.bot:
-            embed = discord.Embed(
-                title="❌ Invalid Target",
-                description="Cannot set money for bots.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        economy = self.load_economy()
-        user_id = str(member.id)
-        
-        if user_id not in economy:
-            economy[user_id] = {
-                "wallet": 0,
-                "bank": 0,
-                "total_earned": 0,
-                "inventory": {},
-                "stocks": {}
-            }
-        
-        old_balance = economy[user_id]["wallet"]
-        economy[user_id]["wallet"] = amount
-        
-        if self.save_economy(economy):
-            embed = discord.Embed(
-                title="💰 Balance Set",
-                description=f"Set {member.mention}'s wallet to **{amount:,}£**",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Previous Balance", value=f"{old_balance:,}£", inline=True)
-            embed.add_field(name="New Balance", value=f"{amount:,}£", inline=True)
-            embed.set_footer(text=f"Action by {ctx.author.name}")
-            
-            await ctx.send(embed=embed)
-            logger.info(f"{ctx.author} set {member}'s balance to {amount}£")
-        else:
-            embed = discord.Embed(
-                title="⚠️ Error",
-                description="Failed to save economy data.",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-    
-    @commands.command(name='resetuser')
-    async def resetuser(self, ctx, member: discord.Member):
-        """Reset a user's economy data completely
-        
-        Usage: !resetuser @user
-        Example: !resetuser @john
-        """
-        if member.bot:
-            embed = discord.Embed(
-                title="❌ Invalid Target",
-                description="Cannot reset bot economy data.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        economy = self.load_economy()
-        user_id = str(member.id)
-        
-        if user_id not in economy:
-            embed = discord.Embed(
-                title="ℹ️ No Data",
-                description=f"{member.mention} has no economy data to reset.",
-                color=discord.Color.blue()
-            )
-            return await ctx.send(embed=embed)
-        
-        old_data = economy[user_id].copy()
-        del economy[user_id]
-        
-        if self.save_economy(economy):
-            embed = discord.Embed(
-                title="🔄 User Reset",
-                description=f"Successfully reset all economy data for {member.mention}",
-                color=discord.Color.green()
-            )
-            embed.add_field(
-                name="Wallet Cleared",
-                value=f"{old_data.get('wallet', 0):,}£",
-                inline=True
-            )
-            embed.add_field(
-                name="Bank Cleared",
-                value=f"{old_data.get('bank', 0):,}£",
-                inline=True
-            )
-            embed.set_footer(text=f"Action by {ctx.author.name}")
-            
-            await ctx.send(embed=embed)
-            logger.info(f"{ctx.author} reset economy data for {member}")
-        else:
-            embed = discord.Embed(
-                title="⚠️ Error",
-                description="Failed to save economy data.",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-    
-    @commands.command(name='viewuser')
-    async def viewuser(self, ctx, member: discord.Member):
-        """View detailed economy information about a user
-        
-        Usage: !viewuser @user
-        Example: !viewuser @john
-        """
-        economy = self.load_economy()
-        user_id = str(member.id)
-        
-        if user_id not in economy:
-            economy[user_id] = {
-                "wallet": 0,
-                "bank": 0,
-                "total_earned": 0,
-                "inventory": {},
-                "stocks": {}
-            }
-        
-        user_data = economy[user_id]
-        wallet = user_data.get("wallet", 0)
-        bank = user_data.get("bank", 0)
-        total = wallet + bank
-        total_earned = user_data.get("total_earned", 0)
-        inventory_count = len(user_data.get("inventory", {}))
-        stocks = user_data.get("stocks", {})
-        stock_count = sum(stocks.values())
-        
-        embed = discord.Embed(
-            title=f"💼 {member.display_name}'s Economy Profile",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        
-        # Money info
-        embed.add_field(name="💵 Wallet", value=f"{wallet:,}£", inline=True)
-        embed.add_field(name="🏦 Bank", value=f"{bank:,}£", inline=True)
-        embed.add_field(name="💎 Total", value=f"{total:,}£", inline=True)
-        
-        # Stats
-        embed.add_field(name="📊 Total Earned", value=f"{total_earned:,}£", inline=True)
-        embed.add_field(name="🎒 Inventory Items", value=f"{inventory_count}", inline=True)
-        embed.add_field(name="📈 Stock Shares", value=f"{stock_count}", inline=True)
-        
-        embed.set_footer(text=f"User ID: {member.id} | Requested by {ctx.author.name}")
-        
-        await ctx.send(embed=embed)
-    
-    @commands.command(name='setprice')
-    async def setprice(self, ctx, stock_symbol: str, price: int):
-        """Set a stock price manually
-        
-        Usage: !setprice <symbol> <price>
-        Example: !setprice TECH 150
-        """
-        stock_symbol = stock_symbol.upper()
-        
-        if price <= 0:
-            embed = discord.Embed(
-                title="❌ Invalid Price",
-                description="Price must be greater than 0.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        market = self.load_market()
-        
-        if stock_symbol not in market.get("stocks", {}):
-            embed = discord.Embed(
-                title="❌ Stock Not Found",
-                description=f"Stock symbol `{stock_symbol}` does not exist.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        old_price = market["stocks"][stock_symbol]["price"]
-        market["stocks"][stock_symbol]["price"] = price
-        
-        # Add to history
-        if "history" not in market["stocks"][stock_symbol]:
-            market["stocks"][stock_symbol]["history"] = []
-        
-        market["stocks"][stock_symbol]["history"].append({
-            "price": price,
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        
-        # Keep only last 100 entries
-        if len(market["stocks"][stock_symbol]["history"]) > 100:
-            market["stocks"][stock_symbol]["history"] = market["stocks"][stock_symbol]["history"][-100:]
-        
-        if self.save_market(market):
-            stock_name = market["stocks"][stock_symbol]["name"]
-            change = price - old_price
-            change_percent = ((price - old_price) / old_price * 100) if old_price > 0 else 0
-            
-            embed = discord.Embed(
-                title="📊 Stock Price Updated",
-                description=f"**{stock_name}** (`{stock_symbol}`)",
-                color=discord.Color.green() if change >= 0 else discord.Color.red()
-            )
-            embed.add_field(name="Old Price", value=f"{old_price:,}£", inline=True)
-            embed.add_field(name="New Price", value=f"{price:,}£", inline=True)
-            embed.add_field(
-                name="Change",
-                value=f"{change:+,}£ ({change_percent:+.2f}%)",
-                inline=True
-            )
-            embed.set_footer(text=f"Updated by {ctx.author.name}")
-            
-            await ctx.send(embed=embed)
-            logger.info(f"{ctx.author} set {stock_symbol} price to {price}£")
-        else:
-            embed = discord.Embed(
-                title="⚠️ Error",
-                description="Failed to save market data.",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-    
-    @commands.command(name='addstock')
-    async def addstock(self, ctx, symbol: str, name: str, price: int):
-        """Add a new stock to the market
-        
-        Usage: !addstock <symbol> <name> <price>
-        Example: !addstock GAME "Gaming Corp" 80
-        """
-        symbol = symbol.upper()
-        
-        if price <= 0:
-            embed = discord.Embed(
-                title="❌ Invalid Price",
-                description="Price must be greater than 0.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        market = self.load_market()
-        
-        if symbol in market.get("stocks", {}):
-            embed = discord.Embed(
-                title="❌ Stock Exists",
-                description=f"Stock symbol `{symbol}` already exists.",
-                color=discord.Color.red()
-            )
-            return await ctx.send(embed=embed)
-        
-        if "stocks" not in market:
-            market["stocks"] = {}
-        
-        market["stocks"][symbol] = {
-            "name": name,
-            "price": price,
-            "history": [{
-                "price": price,
-                "timestamp": datetime.utcnow().isoformat()
-            }]
+    async def log_mod_action(self, action: str, moderator: discord.Member, 
+                           target: Optional[discord.Member] = None, 
+                           reason: str = "No reason provided",
+                           duration: Optional[str] = None) -> None:
+        """Log moderation actions for audit purposes."""
+        log_entry = {
+            "action": action,
+            "moderator": f"{moderator} (ID: {moderator.id})",
+            "target": f"{target} (ID: {target.id})" if target else "N/A",
+            "reason": reason,
+            "duration": duration,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        if self.save_market(market):
-            embed = discord.Embed(
-                title="📈 Stock Added",
-                description=f"Added **{name}** (`{symbol}`) to the market!",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="Starting Price", value=f"{price:,}£", inline=True)
-            embed.set_footer(text=f"Added by {ctx.author.name}")
+        # Save to file
+        try:
+            async with aiofiles.open("mod_logs.json", "r") as f:
+                content = await f.read()
+                logs = json.loads(content) if content else {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            logs = {}
+        
+        guild_id = str(moderator.guild.id)
+        if guild_id not in logs:
+            logs[guild_id] = []
+        
+        logs[guild_id].append(log_entry)
+        
+        # Keep only last 1000 entries per guild
+        if len(logs[guild_id]) > 1000:
+            logs[guild_id] = logs[guild_id][-1000:]
+        
+        async with aiofiles.open("mod_logs.json", "w") as f:
+            await f.write(json.dumps(logs, indent=2))
+        
+        # Send to log channel if set
+        if self.log_channel_id:
+            log_channel = self.bot.get_channel(self.log_channel_id)
+            if log_channel:
+                embed = self._create_mod_log_embed(log_entry)
+                await log_channel.send(embed=embed)
+    
+    def _create_mod_log_embed(self, log_entry: Dict[str, Any]) -> discord.Embed:
+        """Create an embed for moderation logs."""
+        color = {
+            "ban": discord.Color.red(),
+            "kick": discord.Color.orange(),
+            "mute": discord.Color.gold(),
+            "warn": discord.Color.yellow(),
+            "clear": discord.Color.blue()
+        }.get(log_entry["action"], discord.Color.light_grey())
+        
+        embed = discord.Embed(
+            title=f"🛡️ Moderation Action: {log_entry['action'].title()}",
+            color=color,
+            timestamp=datetime.fromisoformat(log_entry["timestamp"])
+        )
+        
+        embed.add_field(name="Moderator", value=log_entry["moderator"], inline=False)
+        embed.add_field(name="Target", value=log_entry["target"], inline=False)
+        embed.add_field(name="Reason", value=log_entry["reason"], inline=False)
+        
+        if log_entry["duration"]:
+            embed.add_field(name="Duration", value=log_entry["duration"], inline=False)
+        
+        return embed
+    
+    # -------------------- Enhanced Moderation Commands --------------------
+    @commands.command(name="kick", brief="Kick a member from the server")
+    async def kick(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        """Kick a member from the server with an optional reason."""
+        try:
+            # Check if we can kick the member
+            if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="You cannot kick members with equal or higher roles.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+                return
             
-            await ctx.send(embed=embed)
-            logger.info(f"{ctx.author} added stock {symbol} ({name}) at {price}£")
-        else:
+            await member.kick(reason=f"Kicked by {ctx.author}: {reason}")
+            
+            # Log the action
+            await self.log_mod_action("kick", ctx.author, member, reason)
+            
             embed = discord.Embed(
-                title="⚠️ Error",
-                description="Failed to save market data.",
+                title="✅ Member Kicked",
+                description=f"**{member}** has been kicked from the server.",
                 color=discord.Color.orange()
             )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+            
             await ctx.send(embed=embed)
-    
-    @commands.command(name='sendnews')
-    async def sendnews(self, ctx, channel: discord.TextChannel, *, message: str):
-        """Send a market news message to a specific channel
-        
-        Usage: !sendnews #channel <message>
-        Example: !sendnews #economy TECH stock surges 20%!
-        """
-        embed = discord.Embed(
-            title="📰 Market News",
-            description=message,
-            color=discord.Color.gold(),
-            timestamp=datetime.utcnow()
-        )
-        embed.set_footer(text="Market Update")
-        
-        try:
-            await channel.send(embed=embed)
-            
-            # Save to news history
-            market = self.load_market()
-            if "news" not in market:
-                market["news"] = []
-            
-            market["news"].append({
-                "message": message,
-                "timestamp": datetime.utcnow().isoformat(),
-                "author": str(ctx.author)
-            })
-            
-            # Keep only last 50 news items
-            if len(market["news"]) > 50:
-                market["news"] = market["news"][-50:]
-            
-            self.save_market(market)
-            
-            confirm_embed = discord.Embed(
-                title="✅ News Sent",
-                description=f"Market news sent to {channel.mention}",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=confirm_embed)
-            logger.info(f"{ctx.author} sent market news to #{channel.name}")
             
         except discord.Forbidden:
             embed = discord.Embed(
                 title="❌ Missing Permissions",
-                description=f"I don't have permission to send messages in {channel.mention}",
+                description="I don't have permission to kick members.",
                 color=discord.Color.red()
             )
             await ctx.send(embed=embed)
+        except Exception as e:
+            logging.error(f"Error kicking member: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to kick the member.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+    
+    @commands.command(name="ban", brief="Ban a member from the server")
+    async def ban(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        """Ban a member from the server with an optional reason."""
+        try:
+            # Check if we can ban the member
+            if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+                embed = discord.Embed(
+                    title="❌ Permission Denied",
+                    description="You cannot ban members with equal or higher roles.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+                return
+            
+            await member.ban(reason=f"Banned by {ctx.author}: {reason}", delete_message_days=0)
+            
+            # Log the action
+            await self.log_mod_action("ban", ctx.author, member, reason)
+            
+            embed = discord.Embed(
+                title="✅ Member Banned",
+                description=f"**{member}** has been banned from the server.",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+            
+            await ctx.send(embed=embed)
+            
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ Missing Permissions",
+                description="I don't have permission to ban members.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logging.error(f"Error banning member: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to ban the member.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+    
+    @commands.command(name="unban", brief="Unban a user from the server")
+    async def unban(self, ctx: commands.Context, user_id: int, *, reason: str = "No reason provided"):
+        """Unban a user from the server by their user ID."""
+        try:
+            user = discord.Object(id=user_id)
+            await ctx.guild.unban(user, reason=f"Unbanned by {ctx.author}: {reason}")
+            
+            # Log the action
+            await self.log_mod_action("unban", ctx.author, None, reason)
+            
+            embed = discord.Embed(
+                title="✅ User Unbanned",
+                description=f"User with ID `{user_id}` has been unbanned from the server.",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+            
+            await ctx.send(embed=embed)
+            
+        except discord.NotFound:
+            embed = discord.Embed(
+                title="❌ User Not Banned",
+                description="This user is not currently banned.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ Missing Permissions",
+                description="I don't have permission to unban members.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logging.error(f"Error unbanning user: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to unban the user.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+    
+    @commands.command(name="mute", brief="Mute a member in the server")
+    async def mute(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        """Mute a member by removing their ability to send messages."""
+        try:
+            # Find or create muted role
+            muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+            if not muted_role:
+                # Create muted role
+                muted_role = await ctx.guild.create_role(name="Muted", reason="Muted role for moderation")
+                
+                # Set permissions for all channels
+                for channel in ctx.guild.channels:
+                    await channel.set_permissions(muted_role, send_messages=False, speak=False)
+            
+            await member.add_roles(muted_role, reason=f"Muted by {ctx.author}: {reason}")
+            
+            # Log the action
+            await self.log_mod_action("mute", ctx.author, member, reason)
+            
+            embed = discord.Embed(
+                title="✅ Member Muted",
+                description=f"**{member}** has been muted.",
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+            
+            await ctx.send(embed=embed)
+            
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ Missing Permissions",
+                description="I don't have permission to manage roles.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logging.error(f"Error muting member: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to mute the member.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+    
+    @commands.command(name="unmute", brief="Unmute a member in the server")
+    async def unmute(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        """Unmute a member by restoring their ability to send messages."""
+        try:
+            muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+            if not muted_role or muted_role not in member.roles:
+                embed = discord.Embed(
+                    title="❌ Not Muted",
+                    description="This member is not currently muted.",
+                    color=discord.Color.red()
+                )
+                await ctx.send(embed=embed)
+                return
+            
+            await member.remove_roles(muted_role, reason=f"Unmuted by {ctx.author}: {reason}")
+            
+            # Log the action
+            await self.log_mod_action("unmute", ctx.author, member, reason)
+            
+            embed = discord.Embed(
+                title="✅ Member Unmuted",
+                description=f"**{member}** has been unmuted.",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+            
+            await ctx.send(embed=embed)
+            
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ Missing Permissions",
+                description="I don't have permission to manage roles.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logging.error(f"Error unmuting member: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to unmute the member.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+    
+    # -------------------- Enhanced Utility Commands --------------------
+    @commands.command(name="clear", aliases=["purge", "clean"])
+    async def clear(self, ctx: commands.Context, amount: int = 10):
+        """Delete messages from channel with better filtering."""
+        if amount <= 0 or amount > 100:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Please specify a number between 1 and 100.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=5)
+            return
+        
+        try:
+            # Delete command message first
+            await ctx.message.delete()
+            
+            # Delete messages
+            deleted = await ctx.channel.purge(limit=amount)
+            
+            # Log the action
+            await self.log_mod_action("clear", ctx.author, None, f"Cleared {len(deleted)} messages")
+            
+            # Send confirmation
+            embed = discord.Embed(
+                title="✅ Messages Cleared",
+                description=f"Deleted **{len(deleted)}** messages.",
+                color=discord.Color.green()
+            )
+            confirm = await ctx.send(embed=embed)
+            await asyncio.sleep(3)
+            await confirm.delete()
+            
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ Missing Permissions",
+                description="I don't have permission to delete messages in this channel.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=5)
+        except Exception as e:
+            logging.error(f"Error clearing messages: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to delete messages.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=5)
+    
+    @commands.command(name="clearuser", aliases=["purgeuser"])
+    async def clear_user(self, ctx: commands.Context, member: discord.Member, amount: int = 10):
+        """Delete messages from a specific user."""
+        if amount <= 0 or amount > 100:
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Please specify a number between 1 and 100.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=5)
+            return
+        
+        try:
+            # Delete command message first
+            await ctx.message.delete()
+            
+            # Check if we can delete messages
+            def is_target_user(message):
+                return message.author == member
+            
+            deleted = await ctx.channel.purge(limit=amount, check=is_target_user)
+            
+            # Log the action
+            await self.log_mod_action("clear", ctx.author, member, f"Cleared {len(deleted)} messages from user")
+            
+            # Send confirmation
+            embed = discord.Embed(
+                title="✅ User Messages Cleared",
+                description=f"Deleted **{len(deleted)}** messages from {member.mention}.",
+                color=discord.Color.green()
+            )
+            confirm = await ctx.send(embed=embed)
+            await asyncio.sleep(3)
+            await confirm.delete()
+            
+        except discord.Forbidden:
+            embed = discord.Embed(
+                title="❌ Missing Permissions",
+                description="I don't have permission to delete messages in this channel.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=5)
+        except Exception as e:
+            logging.error(f"Error clearing user messages: {e}")
+            embed = discord.Embed(
+                title="❌ Error",
+                description="An error occurred while trying to delete messages.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed, delete_after=5)
+    
+    # -------------------- Server Management --------------------
+    @commands.command(name="setlogchannel", aliases=["logchannel"])
+    async def set_log_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel for moderation logs."""
+        channel = channel or ctx.channel
+        self.log_channel_id = channel.id
+        
+        embed = discord.Embed(
+            title="✅ Log Channel Set",
+            description=f"Moderation logs will now be sent to {channel.mention}",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="serverinfo", aliases=["guildinfo"])
+    async def serverinfo(self, ctx: commands.Context):
+        """Display detailed server information."""
+        guild = ctx.guild
+        
+        # Calculate various statistics
+        online_members = sum(1 for m in guild.members if m.status != discord.Status.offline)
+        bot_count = sum(1 for m in guild.members if m.bot)
+        human_count = guild.member_count - bot_count
+        
+        # Role count (excluding @everyone)
+        role_count = len(guild.roles) - 1
+        
+        # Server boost information
+        boost_level = guild.premium_tier
+        boost_count = guild.premium_subscription_count
+        
+        embed = discord.Embed(
+            title=f"🏰 {guild.name}",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        
+        # Server Information
+        embed.add_field(name="🆔 Server ID", value=guild.id, inline=True)
+        embed.add_field(name="👑 Owner", value=guild.owner.mention if guild.owner else "Unknown", inline=True)
+        embed.add_field(name="📅 Created", value=guild.created_at.strftime("%Y-%m-%d"), inline=True)
+        
+        # Member Statistics
+        embed.add_field(name="👥 Total Members", value=guild.member_count, inline=True)
+        embed.add_field(name="🟢 Online Members", value=online_members, inline=True)
+        embed.add_field(name="🤖 Bots", value=bot_count, inline=True)
+        
+        # Channel Information
+        embed.add_field(name="💬 Text Channels", value=len(guild.text_channels), inline=True)
+        embed.add_field(name="🎧 Voice Channels", value=len(guild.voice_channels), inline=True)
+        embed.add_field(name="📋 Categories", value=len(guild.categories), inline=True)
+        
+        # Other Information
+        embed.add_field(name="🎭 Roles", value=role_count, inline=True)
+        embed.add_field(name="🚀 Boosts", value=f"Level {boost_level} ({boost_count} boosts)", inline=True)
+        embed.add_field(name="🔐 Verification", value=str(guild.verification_level).title(), inline=True)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="userinfo", aliases=["whois", "memberinfo"])
+    async def userinfo(self, ctx: commands.Context, member: discord.Member = None):
+        """Display detailed user information."""
+        member = member or ctx.author
+        
+        # Calculate account age and server join age
+        account_age = (datetime.now(timezone.utc) - member.created_at).days
+        server_join_age = (datetime.now(timezone.utc) - member.joined_at).days if member.joined_at else 0
+        
+        # Get roles (excluding @everyone)
+        roles = [role for role in member.roles if role.name != "@everyone"]
+        roles.reverse()  # Show highest roles first
+        
+        embed = discord.Embed(
+            title=f"👤 {member.display_name}",
+            color=member.color,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        embed.set_thumbnail(url=member.display_avatar.url)
+        
+        # Basic Information
+        embed.add_field(name="🆔 User ID", value=member.id, inline=True)
+        embed.add_field(name="📛 Username", value=f"{member.name}#{member.discriminator}", inline=True)
+        embed.add_field(name="📅 Account Created", value=member.created_at.strftime("%Y-%m-%d"), inline=True)
+        
+        # Server Information
+        embed.add_field(name="📥 Joined Server", value=member.joined_at.strftime("%Y-%m-%d") if member.joined_at else "Unknown", inline=True)
+        embed.add_field(name="🕐 Account Age", value=f"{account_age} days", inline=True)
+        embed.add_field(name="🕐 Server Age", value=f"{server_join_age} days", inline=True)
+        
+        # Status and Activity
+        status_emoji = {
+            discord.Status.online: "🟢",
+            discord.Status.idle: "🟡", 
+            discord.Status.dnd: "🔴",
+            discord.Status.offline: "⚫"
+        }
+        embed.add_field(name="📱 Status", value=f"{status_emoji.get(member.status, '⚫')} {str(member.status).title()}", inline=True)
+        
+        # Roles
+        if roles:
+            roles_display = ", ".join([role.mention for role in roles[:5]])  # Show first 5 roles
+            if len(roles) > 5:
+                roles_display += f" ... and {len(roles) - 5} more"
+            embed.add_field(name="🎭 Roles", value=roles_display, inline=False)
+        else:
+            embed.add_field(name="🎭 Roles", value="No roles", inline=False)
+        
+        # Permissions
+        key_permissions = []
+        if member.guild_permissions.administrator:
+            key_permissions.append("Administrator")
+        if member.guild_permissions.manage_guild:
+            key_permissions.append("Manage Server")
+        if member.guild_permissions.manage_roles:
+            key_permissions.append("Manage Roles")
+        if member.guild_permissions.manage_messages:
+            key_permissions.append("Manage Messages")
+            
+        if key_permissions:
+            embed.add_field(name="🔑 Key Permissions", value=", ".join(key_permissions), inline=False)
+        
+        await ctx.send(embed=embed)
+    
+    # -------------------- Bot Management --------------------
+    @commands.command(name="reloadcogs", aliases=["cogreload"])
+    async def reload_cogs(self, ctx: commands.Context):
+        """Reload all bot cogs."""
+        try:
+            cogs = ["admin", "economy"]
+            reloaded = []
+            failed = []
+            
+            for cog in cogs:
+                try:
+                    await self.bot.reload_extension(cog)
+                    reloaded.append(cog)
+                except Exception as e:
+                    failed.append(f"{cog}: {e}")
+            
+            embed = discord.Embed(
+                title="🔄 Cog Reload Results",
+                color=discord.Color.blue()
+            )
+            
+            if reloaded:
+                embed.add_field(name="✅ Reloaded", value=", ".join(reloaded), inline=False)
+            if failed:
+                embed.add_field(name="❌ Failed", value="\n".join(failed), inline=False)
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Error reloading cogs: {e}")
+            embed = discord.Embed(
+                title="❌ Reload Failed",
+                description="An error occurred while reloading cogs.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+    
+    @commands.command(name="setstatus", aliases=["status"])
+    async def set_status(self, ctx: commands.Context, *, status: str = None):
+        """Change the bot's status."""
+        if status:
+            await self.bot.change_presence(activity=discord.Game(name=status))
+            embed = discord.Embed(
+                title="✅ Status Updated",
+                description=f"Bot status changed to: **{status}**",
+                color=discord.Color.green()
+            )
+        else:
+            # Show current status
+            current_activity = self.bot.activity
+            status_text = current_activity.name if current_activity else "No activity set"
+            
+            embed = discord.Embed(
+                title="🤖 Bot Status",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Current Activity", value=status_text, inline=False)
+            embed.add_field(name="Latency", value=f"{round(self.bot.latency * 1000)}ms", inline=False)
+            embed.add_field(name="Guilds", value=len(self.bot.guilds), inline=False)
+            embed.add_field(name="Users", value=sum(g.member_count for g in self.bot.guilds), inline=False)
+        
+        await ctx.send(embed=embed)
+
+    # -------------------- Economy Admin Commands --------------------
+    @commands.command(name="economygive", aliases=["egive", "agive"])
+    async def economy_give(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin: Give money to a user's wallet."""
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            embed = discord.Embed(
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        # FIX: await the coroutine
+        await economy_cog.update_balance(member.id, wallet_change=amount)
+        
+        embed = discord.Embed(
+            title="✅ Money Given",
+            description=f"Gave {amount:,}£ to {member.mention}",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+        
+        # Log the action
+        await self.log_mod_action("economy_give", ctx.author, member, f"Given {amount:,}£")
+
+    @commands.command(name="economytake", aliases=["etake", "atake"])
+    async def economy_take(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin: Take money from a user's wallet."""
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            embed = discord.Embed(
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        # FIX: await the coroutine and then access the data
+        user_data = await economy_cog.get_user(member.id)  # Add await here
+        taken = min(amount, user_data["wallet"])  # Now user_data is a dict, not a coroutine
+        
+        await economy_cog.update_balance(member.id, wallet_change=-taken)
+        
+        embed = discord.Embed(
+            title="✅ Money Taken",
+            description=f"Took {taken:,}£ from {member.mention}",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+        
+        await self.log_mod_action("economy_take", ctx.author, member, f"Taken {taken:,}£")
+
+    @commands.command(name="economyset", aliases=["eset", "aset"])
+    async def economy_set(self, ctx: commands.Context, member: discord.Member, wallet: int = None, bank: int = None):
+        """Admin: Set a user's wallet and/or bank balance."""
+        if wallet is None and bank is None:
+            embed = discord.Embed(
+                title="❌ No Values Specified",
+                description="Please specify at least one of: wallet amount, bank amount",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+
+        if (wallet is not None and wallet < 0) or (bank is not None and bank < 0):
+            embed = discord.Embed(
+                title="❌ Invalid Amount",
+                description="Amounts cannot be negative.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            embed = discord.Embed(
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        # FIX: await the coroutine
+        user_data = await economy_cog.get_user(member.id)  # Add await here
+        
+        wallet_change = 0
+        bank_change = 0
+        
+        if wallet is not None:
+            wallet_change = wallet - user_data["wallet"]
+        
+        if bank is not None:
+            bank_change = bank - user_data["bank"]
+        
+        await economy_cog.update_balance(member.id, wallet_change=wallet_change, bank_change=bank_change)
+        
+        embed = discord.Embed(
+            title="✅ Balance Set",
+            description=f"Updated {member.mention}'s balance",
+            color=discord.Color.green()
+        )
+        
+        if wallet is not None:
+            embed.add_field(name="💵 Wallet", value=f"{wallet:,}£", inline=True)
+        if bank is not None:
+            embed.add_field(name="🏦 Bank", value=f"{bank:,}£", inline=True)
+        
+        await ctx.send(embed=embed)
+        
+        action_desc = f"Set wallet: {wallet}, bank: {bank}" if wallet and bank else f"Set wallet: {wallet}" if wallet else f"Set bank: {bank}"
+        await self.log_mod_action("economy_set", ctx.author, member, action_desc)
+
+    @commands.command(name="economyreset", aliases=["ereset", "areset"])
+    async def economy_reset(self, ctx: commands.Context, member: discord.Member):
+        """Admin: Reset a user's entire economy data."""
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            embed = discord.Embed(
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        # Get the database instance from economy cog
+        from economy import db
+        
+        # Reset user data
+        user_id_str = str(member.id)
+        if db.connected and db.db:
+            # Reset in MongoDB
+            await db.db.users.update_one(
+                {"user_id": member.id},
+                {"$set": {
+                    "wallet": 100,
+                    "bank": 0,
+                    "bank_limit": 5000,
+                    "networth": 100,
+                    "daily_streak": 0,
+                    "last_daily": None,
+                    "total_earned": 0,
+                    "created_at": datetime.now().isoformat(),
+                    "last_active": datetime.now().isoformat()
+                }}
+            )
+            
+            # Remove from inventory
+            await db.db.inventory.delete_many({"user_id": member.id})
+            
+            embed = discord.Embed(
+                title="✅ Economy Data Reset",
+                description=f"Reset all economy data for {member.mention}",
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                title="ℹ️ No Database Connection",
+                description="Cannot reset data without database connection.",
+                color=discord.Color.blue()
+            )
+        
+        await ctx.send(embed=embed)
+        await self.log_mod_action("economy_reset", ctx.author, member, "Reset all economy data")
+
+    @commands.command(name="economystats", aliases=["estats", "astats"])
+    async def economy_stats(self, ctx: commands.Context):
+        """Admin: View economy system statistics."""
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            embed = discord.Embed(
+                title="❌ Economy System Unavailable",
+                description="Economy cog is not loaded.",
+                color=discord.Color.red()
+            )
+            return await ctx.send(embed=embed)
+        
+        # Get the database instance from economy cog
+        from economy import db
+        stats = await db.get_stats()
+        
+        embed = discord.Embed(
+            title="📊 Economy System Statistics",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        embed.add_field(name="👥 Total Users", value=stats['total_users'], inline=True)
+        embed.add_field(name="💰 Total Money in Circulation", value=f"{stats['total_money']:,}£", inline=True)
+        embed.add_field(name="📅 System Created", value=datetime.fromisoformat(stats['created_at']).strftime("%Y-%m-%d"), inline=True)
+        embed.add_field(name="💾 Last Save", value=datetime.fromisoformat(stats['last_save']).strftime("%H:%M:%S") if stats['last_save'] else "Never", inline=True)
+        
+        # Calculate average wealth
+        avg_wealth = stats['total_money'] // stats['total_users'] if stats['total_users'] > 0 else 0
+        embed.add_field(name="📈 Average Wealth", value=f"{avg_wealth:,}£", inline=True)
+        
+        # Find richest user
+        if db.connected and db.db:
+            richest_user = await db.db.users.find_one(sort=[("networth", -1)])
+            if richest_user:
+                richest_user_obj = self.bot.get_user(richest_user["user_id"])
+                richest_amount = richest_user["wallet"] + richest_user["bank"]
+                embed.add_field(name="🏆 Richest User", value=f"{richest_user_obj.display_name if richest_user_obj else 'Unknown'}\n{richest_amount:,}£", inline=True)
+        
+        await ctx.send(embed=embed)
 
 async def setup(bot):
-    """Load the Admin cog"""
     await bot.add_cog(Admin(bot))
-    logger.info("Admin cog loaded")
