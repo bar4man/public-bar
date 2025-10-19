@@ -3,5 +3,17 @@ services:
     name: discord-bot
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install -r requirements.txt
+      python -c "import sys; print('Python path:', sys.path)"
     startCommand: python main.py
+    envVars:
+      - key: DISCORD_TOKEN
+        fromSecret: true
+      - key: MONGODB_URI
+        fromSecret: true
+      - key: KEEP_ALIVE
+        value: "true"
+      - key: PYTHONPATH
+        value: "/opt/render/project/src"
+    healthCheckPath: /render-health
