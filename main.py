@@ -525,15 +525,30 @@ async def _show_economy_help(ctx: commands.Context):
         inline=False
     )
     
-    # Shop & Items
+    # Gambling Commands
+    gambling_cmds = [
+        "`flip <heads/tails> <bet>` - Coin flip game (2x)",
+        "`dice <bet>` - Dice game (6x for rolling 6)",
+        "`slots <bet>` - Slot machine (up to 50x)"
+    ]
+    
+    embed.add_field(
+        name="🎰 Gambling Games",
+        value="\n".join(gambling_cmds),
+        inline=False
+    )
+    
+    # Shop & Inventory
     shop_cmds = [
         "`shop` - Browse the shop",
         "`buy <item_id>` - Purchase an item", 
+        "`inventory` - View your inventory",
+        "`use <item_id>` - Use an item",
         "`pay <member> <amount>` - Pay another user"
     ]
     
     embed.add_field(
-        name="🛍️ Shop & Items",
+        name="🛍️ Shop & Inventory",
         value="\n".join(shop_cmds),
         inline=False
     )
@@ -542,7 +557,9 @@ async def _show_economy_help(ctx: commands.Context):
         name="💡 Important Notes",
         value=(
             "• **Shop purchases use BANK money**\n"
-            "• **Payments use WALLET money**\n"
+            "• **Payments/Gambling use WALLET money**\n"
+            "• **Excess money is LOST** if over limits\n"
+            "• **Penalty:** Lose 1£ for impossible deposits\n"
             "• Use `~~deposit` to move money to bank\n"
             "• Use `~~withdraw` to get money from bank"
         ),
