@@ -144,6 +144,16 @@ class MongoDB:
                             "effect": {"mystery_box": True},
                             "emoji": "🎁",
                             "stock": -1
+                        },
+                        {
+                            "id": 10,
+                            "name": "🎲 Lucky Dice",
+                            "description": "Increases gambling win chance by 10% for 3 uses",
+                            "price": 1500,
+                            "type": "consumable",
+                            "effect": {"gambling_bonus": 1.1, "uses": 3},
+                            "emoji": "🎲",
+                            "stock": -1
                         }
                     ],
                     "created_at": datetime.now()
@@ -265,22 +275,30 @@ class MongoDB:
         # Ensure user has required fields (double safety check)
         user = self._ensure_user_schema(user)
         
-        # Update wallet with limit check
+        original_wallet = user['wallet']
+        original_bank = user['bank']
+        
+        # Update wallet with limit check - excess money is LOST
         new_wallet = user['wallet'] + wallet_change
         if new_wallet > user['wallet_limit']:
-            # If adding money would exceed wallet limit, put excess in bank
-            excess = new_wallet - user['wallet_limit']
-            user['wallet'] = user['wallet_limit']
-            bank_change += excess  # Add excess to bank
+            user['wallet'] = user['wallet_limit']  # Cap at limit, excess is lost
+            wallet_change = user['wallet_limit'] - original_wallet
+        elif new_wallet < 0:
+            user['wallet'] = 0
+            wallet_change = -original_wallet
         else:
-            user['wallet'] = max(0, new_wallet)
+            user['wallet'] = new_wallet
         
-        # Update bank with limit check
+        # Update bank with limit check - excess money is LOST
         new_bank = user['bank'] + bank_change
         if new_bank > user['bank_limit']:
-            user['bank'] = user['bank_limit']
+            user['bank'] = user['bank_limit']  # Cap at limit, excess is lost
+            bank_change = user['bank_limit'] - original_bank
+        elif new_bank < 0:
+            user['bank'] = 0
+            bank_change = -original_bank
         else:
-            user['bank'] = max(0, new_bank)
+            user['bank'] = new_bank
         
         user['networth'] = user['wallet'] + user['bank']
         user['last_active'] = datetime.now()
@@ -304,12 +322,13 @@ class MongoDB:
         if from_user_data['wallet'] < amount:
             return False
         
-        # Check if receiver has wallet space
+        # Check if receiver has wallet space - if not, money is LOST
+        transfer_amount = amount
         if to_user_data['wallet'] + amount > to_user_data['wallet_limit']:
-            return False
+            transfer_amount = to_user_data['wallet_limit'] - to_user_data['wallet']
         
         from_user_data['wallet'] -= amount
-        to_user_data['wallet'] += amount
+        to_user_data['wallet'] += transfer_amount
         
         # Update networth
         from_user_data['networth'] = from_user_data['wallet'] + from_user_data['bank']
@@ -319,7 +338,7 @@ class MongoDB:
         await self.update_user(from_user, from_user_data)
         await self.update_user(to_user, to_user_data)
         
-        return True
+        return transfer_amount == amount  # Return True only if full amount was transferred
     
     # Cooldown management
     async def check_cooldown(self, user_id: int, command: str, cooldown_seconds: int) -> Optional[float]:
@@ -371,16 +390,32 @@ class MongoDB:
             return
             
         try:
-            inventory_item = {
+            # Check if user already has this item (for stackable items)
+            existing_item = await self.db.inventory.find_one({
                 "user_id": user_id,
-                "item_id": item["id"],
-                "name": item["name"],
-                "type": item["type"],
-                "effect": item["effect"],
-                "emoji": item["emoji"],
-                "purchased_at": datetime.now()
-            }
-            await self.db.inventory.insert_one(inventory_item)
+                "item_id": item["id"]
+            })
+            
+            if existing_item and item.get("stackable", False):
+                # Update quantity for stackable items
+                await self.db.inventory.update_one(
+                    {"user_id": user_id, "item_id": item["id"]},
+                    {"$inc": {"quantity": 1}}
+                )
+            else:
+                # Add new item
+                inventory_item = {
+                    "user_id": user_id,
+                    "item_id": item["id"],
+                    "name": item["name"],
+                    "type": item["type"],
+                    "effect": item["effect"],
+                    "emoji": item["emoji"],
+                    "quantity": 1,
+                    "purchased_at": datetime.now(),
+                    "uses_remaining": item.get("effect", {}).get("uses", 1) if item["type"] == "consumable" else None
+                }
+                await self.db.inventory.insert_one(inventory_item)
         except Exception as e:
             logging.error(f"❌ Error adding to inventory for user {user_id}: {e}")
     
@@ -396,17 +431,60 @@ class MongoDB:
             logging.error(f"❌ Error getting inventory for user {user_id}: {e}")
             return []
     
+    async def get_inventory_item(self, user_id: int, item_id: int) -> Optional[Dict]:
+        """Get specific item from user's inventory."""
+        if not self.connected:
+            return None
+            
+        try:
+            return await self.db.inventory.find_one({"user_id": user_id, "item_id": item_id})
+        except Exception as e:
+            logging.error(f"❌ Error getting inventory item for user {user_id}: {e}")
+            return None
+    
     async def use_item(self, user_id: int, item_id: int) -> bool:
         """Use item from inventory."""
         if not self.connected:
             return False
             
         try:
-            result = await self.db.inventory.delete_one({"user_id": user_id, "item_id": item_id})
-            return result.deleted_count > 0
+            item = await self.get_inventory_item(user_id, item_id)
+            if not item:
+                return False
+            
+            if item.get("quantity", 1) > 1:
+                # Decrement quantity for stackable items
+                await self.db.inventory.update_one(
+                    {"user_id": user_id, "item_id": item_id},
+                    {"$inc": {"quantity": -1}}
+                )
+            elif item.get("uses_remaining") and item["uses_remaining"] > 1:
+                # Decrement uses for multi-use items
+                await self.db.inventory.update_one(
+                    {"user_id": user_id, "item_id": item_id},
+                    {"$inc": {"uses_remaining": -1}}
+                )
+            else:
+                # Remove single-use items
+                await self.db.inventory.delete_one({"user_id": user_id, "item_id": item_id})
+            
+            return True
         except Exception as e:
             logging.error(f"❌ Error using item for user {user_id}: {e}")
             return False
+    
+    async def update_inventory_item(self, user_id: int, item_id: int, update_data: Dict):
+        """Update inventory item."""
+        if not self.connected:
+            return
+            
+        try:
+            await self.db.inventory.update_one(
+                {"user_id": user_id, "item_id": item_id},
+                {"$set": update_data}
+            )
+        except Exception as e:
+            logging.error(f"❌ Error updating inventory item for user {user_id}: {e}")
     
     # Shop methods
     async def get_shop_items(self) -> List:
@@ -468,6 +546,11 @@ class MongoDB:
                 "id": 9, "name": "🎁 Mystery Box", "price": 1000,
                 "description": "Get a random amount of money between 500-5000£",
                 "type": "consumable", "effect": {"mystery_box": True}, "emoji": "🎁", "stock": -1
+            },
+            {
+                "id": 10, "name": "🎲 Lucky Dice", "price": 1500,
+                "description": "Increases gambling win chance by 10% for 3 uses",
+                "type": "consumable", "effect": {"gambling_bonus": 1.1, "uses": 3}, "emoji": "🎲", "stock": -1
             }
         ]
     
@@ -513,6 +596,7 @@ class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.ready = False
+        self.active_effects = {}  # Track active item effects
         logging.info("✅ Economy system initialized")
     
     async def cog_load(self):
@@ -558,13 +642,13 @@ class Economy(commands.Cog):
         """Get user's inventory."""
         return await db.get_inventory(user_id)
     
-    async def use_item(self, user_id: int, item_index: int) -> bool:
-        """Use item from inventory by index."""
-        inventory = await self.get_inventory(user_id)
-        if item_index < len(inventory):
-            item = inventory[item_index]
-            return await db.use_item(user_id, item['item_id'])
-        return False
+    async def get_inventory_item(self, user_id: int, item_id: int) -> Optional[Dict]:
+        """Get specific item from user's inventory."""
+        return await db.get_inventory_item(user_id, item_id)
+    
+    async def use_item(self, user_id: int, item_id: int) -> bool:
+        """Use item from inventory."""
+        return await db.use_item(user_id, item_id)
     
     # Shop methods
     async def get_shop_items(self) -> List:
@@ -607,6 +691,20 @@ class Economy(commands.Cog):
         embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
         embed.set_footer(text=f"Economy System | {database_status}")
         return embed
+    
+    def get_active_effects(self, user_id: int) -> Dict:
+        """Get active effects for a user."""
+        return self.active_effects.get(user_id, {})
+    
+    def set_active_effect(self, user_id: int, effect_type: str, multiplier: float, duration: int = None):
+        """Set an active effect for a user."""
+        if user_id not in self.active_effects:
+            self.active_effects[user_id] = {}
+        
+        self.active_effects[user_id][effect_type] = {
+            "multiplier": multiplier,
+            "expires_at": datetime.now() + timedelta(days=duration) if duration else None
+        }
 
     # ========== COMMANDS ==========
     
@@ -783,12 +881,37 @@ class Economy(commands.Cog):
             embed.description = f"You only have {self.format_money(wallet)} in your wallet."
             return await ctx.send(embed=embed)
         
+        # Check if deposit would exceed bank limit - with penalty
         if bank + deposit_amount > bank_limit:
-            embed = await self.create_economy_embed("❌ Bank Limit Exceeded", discord.Color.red())
-            embed.description = f"Your bank can only hold {self.format_money(bank_limit)}. You have {self.format_money(bank)} already."
-            return await ctx.send(embed=embed)
+            # Apply penalty - lose 1 currency
+            penalty_amount = 1
+            actual_deposit = bank_limit - bank
+            
+            if actual_deposit <= 0:
+                embed = await self.create_economy_embed("❌ Bank Full", discord.Color.red())
+                embed.description = f"Your bank is full! You cannot deposit any money.\n**Penalty:** Lost {self.format_money(penalty_amount)} for attempting impossible deposit."
+                
+                # Apply penalty
+                await self.update_balance(ctx.author.id, wallet_change=-penalty_amount)
+                embed.add_field(name="💸 Penalty Applied", value=f"Lost {self.format_money(penalty_amount)} from wallet", inline=False)
+                return await ctx.send(embed=embed)
+            
+            # Deposit what we can and apply penalty
+            result = await self.update_balance(ctx.author.id, wallet_change=-deposit_amount, bank_change=actual_deposit)
+            
+            embed = await self.create_economy_embed("⚠️ Partial Deposit with Penalty", discord.Color.orange())
+            embed.description = f"Deposited {self.format_money(actual_deposit)} to your bank (couldn't fit {self.format_money(deposit_amount - actual_deposit)}).\n**Penalty:** Lost {self.format_money(penalty_amount)} for attempting impossible deposit."
+            
+            # Apply penalty
+            await self.update_balance(ctx.author.id, wallet_change=-penalty_amount)
+            embed.add_field(name="💸 Penalty Applied", value=f"Lost {self.format_money(penalty_amount)} from wallet", inline=False)
+            embed.add_field(name="💵 New Wallet", value=f"{self.format_money(result['wallet'])} / {self.format_money(result['wallet_limit'])}", inline=True)
+            embed.add_field(name="🏦 New Bank", value=f"{self.format_money(result['bank'])} / {self.format_money(result['bank_limit'])}", inline=True)
+            
+            await ctx.send(embed=embed)
+            return
         
-        # Process deposit
+        # Process normal deposit
         result = await self.update_balance(ctx.author.id, wallet_change=-deposit_amount, bank_change=deposit_amount)
         
         embed = await self.create_economy_embed("🏦 Deposit Successful", discord.Color.green())
@@ -830,12 +953,27 @@ class Economy(commands.Cog):
             embed.description = f"You only have {self.format_money(bank)} in your bank."
             return await ctx.send(embed=embed)
         
+        # Check if withdrawal would exceed wallet limit - excess is LOST
         if wallet + withdraw_amount > wallet_limit:
-            embed = await self.create_economy_embed("❌ Wallet Limit Exceeded", discord.Color.red())
-            embed.description = f"Your wallet can only hold {self.format_money(wallet_limit)}. You have {self.format_money(wallet)} already."
-            return await ctx.send(embed=embed)
+            actual_withdraw = wallet_limit - wallet
+            
+            if actual_withdraw <= 0:
+                embed = await self.create_economy_embed("❌ Wallet Full", discord.Color.red())
+                embed.description = f"Your wallet is full! You cannot withdraw any money."
+                return await ctx.send(embed=embed)
+            
+            # Withdraw what we can, excess is lost
+            result = await self.update_balance(ctx.author.id, wallet_change=actual_withdraw, bank_change=-withdraw_amount)
+            
+            embed = await self.create_economy_embed("⚠️ Partial Withdrawal", discord.Color.orange())
+            embed.description = f"Withdrew {self.format_money(actual_withdraw)} from your bank (lost {self.format_money(withdraw_amount - actual_withdraw)} due to wallet limit)."
+            embed.add_field(name="💵 New Wallet", value=f"{self.format_money(result['wallet'])} / {self.format_money(result['wallet_limit'])}", inline=True)
+            embed.add_field(name="🏦 New Bank", value=f"{self.format_money(result['bank'])} / {self.format_money(result['bank_limit'])}", inline=True)
+            
+            await ctx.send(embed=embed)
+            return
         
-        # Process withdrawal
+        # Process normal withdrawal
         result = await self.update_balance(ctx.author.id, wallet_change=withdraw_amount, bank_change=-withdraw_amount)
         
         embed = await self.create_economy_embed("🏦 Withdrawal Successful", discord.Color.green())
@@ -914,13 +1052,17 @@ class Economy(commands.Cog):
         
         user_data = await self.get_user(ctx.author.id)
         
-        # Calculate reward with streak bonus
-        base_reward = random.randint(1000, 2000)  # Increased for new economy
+        # Calculate base reward
+        base_reward = random.randint(1000, 2000)
         streak = user_data.get("daily_streak", 0)
+        
+        # Apply active effects
+        active_effects = self.get_active_effects(ctx.author.id)
+        daily_multiplier = active_effects.get("daily_bonus", {}).get("multiplier", 1.0)
         
         # Streak bonus (max 7 days for 50% bonus)
         streak_bonus = min(streak, 7) * 100
-        total_reward = base_reward + streak_bonus
+        total_reward = int((base_reward + streak_bonus) * daily_multiplier)
         
         # Update user
         user_data["daily_streak"] = streak + 1
@@ -933,7 +1075,17 @@ class Economy(commands.Cog):
         embed.description = f"You received {self.format_money(total_reward)}!"
         
         breakdown = f"• Base: {self.format_money(base_reward)}\n• Streak Bonus: {self.format_money(streak_bonus)} (Day {streak + 1})"
+        if daily_multiplier > 1.0:
+            breakdown += f"\n• Item Bonus: {daily_multiplier}x multiplier"
+        
         embed.add_field(name="💰 Breakdown", value=breakdown, inline=False)
+        
+        # Check if money was lost due to wallet limit
+        wallet_after = result['wallet']
+        if wallet_after < total_reward + user_data['wallet']:
+            lost_money = (total_reward + user_data['wallet']) - wallet_after
+            embed.add_field(name="💸 Money Lost", value=f"{self.format_money(lost_money)} was lost due to wallet limit!", inline=False)
+        
         embed.add_field(name="💵 New Balance", value=f"{self.format_money(result['wallet'])} / {self.format_money(result['wallet_limit'])}", inline=False)
         embed.set_footer(text="Come back in 24 hours for your next reward!")
         
@@ -949,7 +1101,9 @@ class Economy(commands.Cog):
             embed.description = f"You can work again in **{self.format_time(remaining)}**"
             return await ctx.send(embed=embed)
         
-        # Job types with different earnings (increased for new economy)
+        user_data = await self.get_user(ctx.author.id)
+        
+        # Job types with different earnings
         jobs = {
             "delivered packages": (100, 200),
             "drove for Uber": (120, 240),
@@ -961,7 +1115,13 @@ class Economy(commands.Cog):
         }
         
         job, (min_earn, max_earn) = random.choice(list(jobs.items()))
-        earnings = random.randint(min_earn, max_earn)
+        
+        # Apply active effects
+        active_effects = self.get_active_effects(ctx.author.id)
+        work_multiplier = active_effects.get("work_bonus", {}).get("multiplier", 1.0)
+        
+        base_earnings = random.randint(min_earn, max_earn)
+        earnings = int(base_earnings * work_multiplier)
         
         # Critical work chance (10%)
         is_critical = random.random() < 0.1
@@ -979,8 +1139,304 @@ class Economy(commands.Cog):
         else:
             embed.description = f"You {job} and earned {self.format_money(earnings)}!"
         
+        if work_multiplier > 1.0:
+            embed.add_field(name="✨ Item Bonus", value=f"{work_multiplier}x multiplier applied!", inline=False)
+        
+        # Check if money was lost due to wallet limit
+        wallet_after = result['wallet']
+        if wallet_after < earnings + user_data['wallet']:
+            lost_money = (earnings + user_data['wallet']) - wallet_after
+            embed.add_field(name="💸 Money Lost", value=f"{self.format_money(lost_money)} was lost due to wallet limit!", inline=False)
+        
         embed.add_field(name="💵 New Balance", value=f"{self.format_money(result['wallet'])} / {self.format_money(result['wallet_limit'])}", inline=False)
         embed.set_footer(text="You can work again in 1 hour!")
+        
+        await ctx.send(embed=embed)
+
+    # ========== GAMBLING COMMANDS ==========
+    
+    @commands.command(name="flip", aliases=["coinflip"])
+    async def flip(self, ctx: commands.Context, choice: str = None, bet: int = None):
+        """Flip a coin - bet on heads or tails."""
+        if not choice or not bet:
+            embed = await self.create_economy_embed("🎲 Coin Flip Game", discord.Color.blue())
+            embed.description = "Flip a coin and double your money!\n\n**Usage:** `~~flip <heads/tails> <bet>`"
+            embed.add_field(name="Example", value="`~~flip heads 100` - Bet 100£ on heads", inline=False)
+            embed.add_field(name="Payout", value="**2x** your bet if you win!", inline=False)
+            return await ctx.send(embed=embed)
+        
+        choice = choice.lower()
+        if choice not in ["heads", "tails"]:
+            embed = await self.create_economy_embed("❌ Invalid Choice", discord.Color.red())
+            embed.description = "Please choose either `heads` or `tails`."
+            return await ctx.send(embed=embed)
+        
+        if bet <= 0:
+            embed = await self.create_economy_embed("❌ Invalid Bet", discord.Color.red())
+            embed.description = "Bet must be greater than 0."
+            return await ctx.send(embed=embed)
+        
+        user_data = await self.get_user(ctx.author.id)
+        
+        # Check if user has enough money
+        if user_data["wallet"] < bet:
+            embed = await self.create_economy_embed("❌ Insufficient Funds", discord.Color.red())
+            embed.description = f"You only have {self.format_money(user_data['wallet'])} in your wallet."
+            return await ctx.send(embed=embed)
+        
+        # Apply gambling bonus if active
+        active_effects = self.get_active_effects(ctx.author.id)
+        gambling_multiplier = active_effects.get("gambling_bonus", {}).get("multiplier", 1.0)
+        
+        # Calculate win chance with bonus
+        base_win_chance = 0.5  # 50% base chance
+        win_chance = min(0.9, base_win_chance * gambling_multiplier)  # Cap at 90%
+        
+        # Flip coin
+        result = random.choice(["heads", "tails"])
+        win = choice == result
+        
+        if win:
+            # Calculate winnings
+            winnings = bet * 2
+            result_text = await self.update_balance(ctx.author.id, wallet_change=winnings - bet)
+            
+            embed = await self.create_economy_embed("🎉 You Won!", discord.Color.green())
+            embed.description = f"The coin landed on **{result}**! You won {self.format_money(winnings)}!"
+            
+            if gambling_multiplier > 1.0:
+                embed.add_field(name="✨ Lucky Bonus", value=f"Your win chance was increased by your items!", inline=False)
+        else:
+            # Lose bet
+            result_text = await self.update_balance(ctx.author.id, wallet_change=-bet)
+            
+            embed = await self.create_economy_embed("💸 You Lost!", discord.Color.red())
+            embed.description = f"The coin landed on **{result}**. You lost {self.format_money(bet)}."
+        
+        embed.add_field(name="💵 New Balance", value=f"{self.format_money(result_text['wallet'])} / {self.format_money(result_text['wallet_limit'])}", inline=False)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="dice")
+    async def dice(self, ctx: commands.Context, bet: int = None):
+        """Roll a dice - win 6x your bet if you roll a 6."""
+        if not bet:
+            embed = await self.create_economy_embed("🎯 Dice Game", discord.Color.blue())
+            embed.description = "Roll a dice and win big!\n\n**Usage:** `~~dice <bet>`"
+            embed.add_field(name="Payout", value="**6x** your bet if you roll a 6!", inline=False)
+            embed.add_field(name="Win Chance", value="1 in 6 (16.67%)", inline=False)
+            return await ctx.send(embed=embed)
+        
+        if bet <= 0:
+            embed = await self.create_economy_embed("❌ Invalid Bet", discord.Color.red())
+            embed.description = "Bet must be greater than 0."
+            return await ctx.send(embed=embed)
+        
+        user_data = await self.get_user(ctx.author.id)
+        
+        # Check if user has enough money
+        if user_data["wallet"] < bet:
+            embed = await self.create_economy_embed("❌ Insufficient Funds", discord.Color.red())
+            embed.description = f"You only have {self.format_money(user_data['wallet'])} in your wallet."
+            return await ctx.send(embed=embed)
+        
+        # Apply gambling bonus if active
+        active_effects = self.get_active_effects(ctx.author.id)
+        gambling_multiplier = active_effects.get("gambling_bonus", {}).get("multiplier", 1.0)
+        
+        # Calculate win chance with bonus
+        base_win_chance = 1/6  # 16.67% base chance
+        win_chance = min(1/3, base_win_chance * gambling_multiplier)  # Cap at 33.33%
+        
+        # Roll dice
+        roll = random.randint(1, 6)
+        win = roll == 6
+        
+        if win:
+            # Calculate winnings
+            winnings = bet * 6
+            result_text = await self.update_balance(ctx.author.id, wallet_change=winnings - bet)
+            
+            embed = await self.create_economy_embed("🎉 Jackpot!", discord.Color.green())
+            embed.description = f"🎲 You rolled a **6**! You won {self.format_money(winnings)}!"
+            
+            if gambling_multiplier > 1.0:
+                embed.add_field(name="✨ Lucky Bonus", value=f"Your win chance was increased by your items!", inline=False)
+        else:
+            # Lose bet
+            result_text = await self.update_balance(ctx.author.id, wallet_change=-bet)
+            
+            embed = await self.create_economy_embed("💸 You Lost!", discord.Color.red())
+            embed.description = f"🎲 You rolled a **{roll}**. You lost {self.format_money(bet)}."
+        
+        embed.add_field(name="💵 New Balance", value=f"{self.format_money(result_text['wallet'])} / {self.format_money(result_text['wallet_limit'])}", inline=False)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="slots", aliases=["slot"])
+    async def slots(self, ctx: commands.Context, bet: int = None):
+        """Play slots - match 3 symbols to win!"""
+        if not bet:
+            embed = await self.create_economy_embed("🎰 Slot Machine", discord.Color.blue())
+            embed.description = "Play the slot machine and win big!\n\n**Usage:** `~~slots <bet>`"
+            embed.add_field(name="Payouts", value="• 3x **🍒** - 10x bet\n• 3x **🍋** - 5x bet\n• 3x **🍊** - 3x bet\n• 3x **💎** - 20x bet", inline=False)
+            return await ctx.send(embed=embed)
+        
+        if bet <= 0:
+            embed = await self.create_economy_embed("❌ Invalid Bet", discord.Color.red())
+            embed.description = "Bet must be greater than 0."
+            return await ctx.send(embed=embed)
+        
+        user_data = await self.get_user(ctx.author.id)
+        
+        # Check if user has enough money
+        if user_data["wallet"] < bet:
+            embed = await self.create_economy_embed("❌ Insufficient Funds", discord.Color.red())
+            embed.description = f"You only have {self.format_money(user_data['wallet'])} in your wallet."
+            return await ctx.send(embed=embed)
+        
+        # Slot symbols and weights
+        symbols = ["🍒", "🍋", "🍊", "💎", "7️⃣"]
+        weights = [30, 25, 20, 5, 2]  # Probabilities
+        
+        # Spin slots
+        result = random.choices(symbols, weights=weights, k=3)
+        
+        # Calculate payout
+        payout_multiplier = 0
+        if result[0] == result[1] == result[2]:
+            if result[0] == "🍒":
+                payout_multiplier = 10
+            elif result[0] == "🍋":
+                payout_multiplier = 5
+            elif result[0] == "🍊":
+                payout_multiplier = 3
+            elif result[0] == "💎":
+                payout_multiplier = 20
+            elif result[0] == "7️⃣":
+                payout_multiplier = 50
+        
+        if payout_multiplier > 0:
+            # Win
+            winnings = bet * payout_multiplier
+            result_text = await self.update_balance(ctx.author.id, wallet_change=winnings - bet)
+            
+            embed = await self.create_economy_embed("🎉 Jackpot!", discord.Color.green())
+            embed.description = f"🎰 | {result[0]} | {result[1]} | {result[2]} |\nYou won {self.format_money(winnings)}!"
+        else:
+            # Lose
+            result_text = await self.update_balance(ctx.author.id, wallet_change=-bet)
+            
+            embed = await self.create_economy_embed("💸 You Lost!", discord.Color.red())
+            embed.description = f"🎰 | {result[0]} | {result[1]} | {result[2]} |\nYou lost {self.format_money(bet)}."
+        
+        embed.add_field(name="💵 New Balance", value=f"{self.format_money(result_text['wallet'])} / {self.format_money(result_text['wallet_limit'])}", inline=False)
+        
+        await ctx.send(embed=embed)
+
+    # ========== INVENTORY COMMANDS ==========
+    
+    @commands.command(name="inventory", aliases=["inv", "items"])
+    async def inventory(self, ctx: commands.Context, member: discord.Member = None):
+        """View your inventory."""
+        member = member or ctx.author
+        inventory = await self.get_inventory(member.id)
+        
+        if not inventory:
+            embed = await self.create_economy_embed(f"🎒 {member.display_name}'s Inventory", discord.Color.blue())
+            embed.description = "Your inventory is empty.\nUse `~~shop` to buy some items!"
+            await ctx.send(embed=embed)
+            return
+        
+        embed = await self.create_economy_embed(f"🎒 {member.display_name}'s Inventory", discord.Color.blue())
+        embed.set_thumbnail(url=member.display_avatar.url)
+        
+        for item in inventory:
+            quantity_text = f" x{item['quantity']}" if item.get('quantity', 1) > 1 else ""
+            uses_text = f" ({item['uses_remaining']} uses left)" if item.get('uses_remaining') else ""
+            
+            embed.add_field(
+                name=f"{item['emoji']} {item['name']} (ID: {item['item_id']}){quantity_text}{uses_text}",
+                value=f"Type: {item['type'].title()}",
+                inline=False
+            )
+        
+        embed.add_field(
+            name="💡 How to Use",
+            value="Use `~~use <item_id>` to use an item.\nExample: `~~use 7` to use item with ID 7",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name="use")
+    async def use_item_command(self, ctx: commands.Context, item_id: int = None):
+        """Use an item from your inventory."""
+        if not item_id:
+            embed = await self.create_economy_embed("🎒 Use Item", discord.Color.blue())
+            embed.description = "Use an item from your inventory.\n\n**Usage:** `~~use <item_id>`"
+            embed.add_field(name="Example", value="`~~use 7` - Use the item with ID 7", inline=False)
+            embed.add_field(name="Find Item IDs", value="Use `~~inventory` to see your items and their IDs", inline=False)
+            return await ctx.send(embed=embed)
+        
+        # Get item from inventory
+        inventory_item = await self.get_inventory_item(ctx.author.id, item_id)
+        if not inventory_item:
+            embed = await self.create_economy_embed("❌ Item Not Found", discord.Color.red())
+            embed.description = f"You don't have an item with ID `{item_id}` in your inventory.\nUse `~~inventory` to see your items."
+            return await ctx.send(embed=embed)
+        
+        # Get shop item details
+        shop_item = await self.get_shop_item(item_id)
+        if not shop_item:
+            embed = await self.create_economy_embed("❌ Invalid Item", discord.Color.red())
+            embed.description = "This item is no longer available in the shop."
+            return await ctx.send(embed=embed)
+        
+        # Apply item effect based on type
+        effect = shop_item.get("effect", {})
+        item_type = shop_item["type"]
+        
+        embed = await self.create_economy_embed(f"🎒 Using {shop_item['emoji']} {shop_item['name']}", discord.Color.green())
+        
+        if item_type == "consumable":
+            if "daily_bonus" in effect:
+                # Daily bonus item
+                self.set_active_effect(ctx.author.id, "daily_bonus", effect["daily_bonus"], effect.get("duration", 7))
+                embed.description = f"Activated {shop_item['name']}! Your daily rewards will be increased by {int((effect['daily_bonus'] - 1) * 100)}% for {effect.get('duration', 7)} days."
+            
+            elif "work_bonus" in effect:
+                # Work bonus item
+                self.set_active_effect(ctx.author.id, "work_bonus", effect["work_bonus"], effect.get("duration", 5))
+                embed.description = f"Activated {shop_item['name']}! Your work earnings will be increased by {int((effect['work_bonus'] - 1) * 100)}% for {effect.get('duration', 5)} days."
+            
+            elif "gambling_bonus" in effect:
+                # Gambling bonus item
+                self.set_active_effect(ctx.author.id, "gambling_bonus", effect["gambling_bonus"])
+                embed.description = f"Activated {shop_item['name']}! Your gambling win chance is increased by {int((effect['gambling_bonus'] - 1) * 100)}% for {effect.get('uses', 3)} uses."
+            
+            elif "mystery_box" in effect:
+                # Mystery box - random money
+                reward = random.randint(500, 5000)
+                result = await self.update_balance(ctx.author.id, wallet_change=reward)
+                embed.description = f"🎁 You opened a Mystery Box and found {self.format_money(reward)}!"
+                
+                # Check if money was lost due to wallet limit
+                wallet_after = result['wallet']
+                if wallet_after < reward + (await self.get_user(ctx.author.id))['wallet']:
+                    lost_money = (reward + (await self.get_user(ctx.author.id))['wallet']) - wallet_after
+                    embed.add_field(name="💸 Money Lost", value=f"{self.format_money(lost_money)} was lost due to wallet limit!", inline=False)
+            
+            # Use the item (consumable)
+            await self.use_item(ctx.author.id, item_id)
+            
+        elif item_type == "upgrade":
+            embed.description = "Upgrade items are applied automatically when purchased and cannot be used again."
+            embed.color = discord.Color.blue()
+        
+        else:
+            embed.description = "This item type cannot be used."
+            embed.color = discord.Color.orange()
         
         await ctx.send(embed=embed)
 
@@ -1069,7 +1525,7 @@ class Economy(commands.Cog):
         elif item["type"] in ["consumable", "permanent"]:
             embed.add_field(
                 name="📦 Item Stored",
-                value="Use `~~inventory` to view your items and `~~use <item>` to use consumables.",
+                value="Use `~~inventory` to view your items and `~~use <item_id>` to use consumables.",
                 inline=False
             )
         
@@ -1104,28 +1560,27 @@ class Economy(commands.Cog):
             embed.description = f"You only have {self.format_money(user_data['wallet'])} in your wallet.\nUse `~~withdraw` to get money from your bank."
             return await ctx.send(embed=embed)
         
-        # Check if receiver has wallet space
-        receiver_data = await self.get_user(member.id)
-        if receiver_data["wallet"] + amount > receiver_data["wallet_limit"]:
-            embed = await self.create_economy_embed("❌ Receiver Wallet Full", discord.Color.red())
-            embed.description = f"{member.display_name}'s wallet is full! They need to upgrade their wallet limit or deposit to bank."
-            return await ctx.send(embed=embed)
+        # Check if receiver has wallet space - if not, money is LOST
+        full_transfer = await self.transfer_money(ctx.author.id, member.id, amount)
         
-        # Process transfer (wallet to wallet)
-        success = await self.transfer_money(ctx.author.id, member.id, amount)
-        
-        if success:
+        if full_transfer:
             embed = await self.create_economy_embed("💸 Payment Successful", discord.Color.green())
             embed.description = f"{ctx.author.mention} paid {self.format_money(amount)} to {member.mention} from their wallet!"
-            embed.add_field(name="🔒 Security Note", value="All payments use wallet money. Shop purchases use bank money.", inline=False)
-            embed.set_footer(text=f"Transaction completed at {datetime.now().strftime('%H:%M:%S')}")
         else:
-            embed = await self.create_economy_embed("⚠️ Transfer Failed", discord.Color.red())
-            embed.description = "The payment could not be processed."
+            # Partial transfer occurred (receiver's wallet was full)
+            sender_after = await self.get_user(ctx.author.id)
+            receiver_after = await self.get_user(member.id)
+            
+            actual_amount = user_data['wallet'] - sender_after['wallet']
+            lost_amount = amount - actual_amount
+            
+            embed = await self.create_economy_embed("⚠️ Partial Payment", discord.Color.orange())
+            embed.description = f"{ctx.author.mention} paid {self.format_money(actual_amount)} to {member.mention}.\n**Lost:** {self.format_money(lost_amount)} (receiver's wallet full)"
+        
+        embed.add_field(name="🔒 Security Note", value="All payments use wallet money. Shop purchases use bank money.", inline=False)
+        embed.set_footer(text=f"Transaction completed at {datetime.now().strftime('%H:%M:%S')}")
         
         await ctx.send(embed=embed)
-
-    # ... (keep the rest of the commands like inventory, use, leaderboard, etc. the same)
 
 async def setup(bot):
     await bot.add_cog(Economy(bot))
