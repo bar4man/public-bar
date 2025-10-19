@@ -1,8 +1,1 @@
-discord
-python-dotenv
-aiohttp
-asyncio
-pymongo
-dnspython
-flask
 

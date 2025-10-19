@@ -2,10 +2,10 @@ import discord
 from discord.ext import commands
 import os
 import logging
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 from database import db
-import webserver
 
 # Load environment variables
 load_dotenv()
