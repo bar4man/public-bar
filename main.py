@@ -1,362 +1,285 @@
+import discord
+from discord.ext import commands
 import os
+import json
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
-import sys
-import asyncio
 
-# Load environment variables first
+# Load environment variables
 load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Configure logging before any other imports
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('bot.log', encoding='utf-8')
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
     ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('discord_bot')
 
-# Import discord
-try:
-    import discord
-    from discord.ext import commands
-    logger.info("✅ Using discord.py")
-except ImportError as e:
-    logger.error(f"❌ Discord import failed: {e}")
-    sys.exit(1)
-
-import json
-from datetime import datetime, timezone, timedelta
-import traceback
-
-# Environment variables
-TOKEN = os.getenv("DISCORD_TOKEN")
-MONGODB_URI = os.getenv("MONGODB_URI")
-KEEP_ALIVE = os.getenv("KEEP_ALIVE", "true").lower() == "true"
-
-# Discord intents
+# Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# ---------------- Manager Classes ----------------
-class ConfigManager:
-    def __init__(self, filename="config.json"):
-        self.filename = filename
-        self.default_config = {
-            "prefix": "~~",
-            "allowed_channels": [],
-            "mod_log_channel": None
+bot = commands.Bot(
+    command_prefix='!',
+    intents=intents,
+    help_command=None
+)
+
+# Global variables
+ADMIN_ROLE = "bot-admin"
+
+# Data file paths
+DATA_DIR = "data"
+ECONOMY_FILE = f"{DATA_DIR}/economy.json"
+MARKET_FILE = f"{DATA_DIR}/market.json"
+JOBS_FILE = f"{DATA_DIR}/jobs.json"
+
+# Create data directory if it doesn't exist
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+    logger.info(f"Created {DATA_DIR} directory")
+
+# Initialize data files
+def init_data_files():
+    """Initialize all JSON data files with default structures"""
+    
+    # Economy data structure
+    if not os.path.exists(ECONOMY_FILE):
+        with open(ECONOMY_FILE, 'w') as f:
+            json.dump({}, f, indent=2)
+        logger.info(f"Created {ECONOMY_FILE}")
+    
+    # Market data structure
+    if not os.path.exists(MARKET_FILE):
+        default_market = {
+            "stocks": {
+                "TECH": {"name": "Tech Corp", "price": 100, "history": []},
+                "FOOD": {"name": "Food Industries", "price": 50, "history": []},
+                "ENERGY": {"name": "Energy Solutions", "price": 75, "history": []}
+            },
+            "news": [],
+            "last_update": datetime.utcnow().isoformat()
         }
-        self._ensure_config_exists()
+        with open(MARKET_FILE, 'w') as f:
+            json.dump(default_market, f, indent=2)
+        logger.info(f"Created {MARKET_FILE}")
     
-    def _ensure_config_exists(self):
-        """Create config file with default structure if it doesn't exist."""
-        if not os.path.exists(self.filename):
-            with open(self.filename, "w") as f:
-                json.dump(self.default_config, f, indent=2)
-            logger.info(f"Created new config file: {self.filename}")
-    
-    async def load(self):
-        """Load configuration from file."""
-        try:
-            with open(self.filename, "r") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return self.default_config.copy()
-    
-    async def save(self, data):
-        """Save configuration to file."""
-        try:
-            with open(self.filename, "w") as f:
-                json.dump(data, f, indent=2)
-            return True
-        except Exception:
-            return False
+    # Jobs data structure
+    if not os.path.exists(JOBS_FILE):
+        default_jobs = {
+            "available_jobs": [
+                {"name": "cashier", "pay": 50, "required_balance": 0, "cooldown": 3600},
+                {"name": "delivery", "pay": 100, "required_balance": 500, "cooldown": 3600},
+                {"name": "manager", "pay": 200, "required_balance": 2000, "cooldown": 7200},
+                {"name": "ceo", "pay": 500, "required_balance": 10000, "cooldown": 14400}
+            ]
+        }
+        with open(JOBS_FILE, 'w') as f:
+            json.dump(default_jobs, f, indent=2)
+        logger.info(f"Created {JOBS_FILE}")
 
-class DatabaseManager:
-    def __init__(self):
-        self.uri = MONGODB_URI
-        self.client = None
-        self.db = None
-        self.is_connected = False
-        
-    async def connect(self):
-        """Connect to MongoDB database."""
-        try:
-            if not self.uri:
-                logger.error("MONGODB_URI not found")
-                return False
-                
-            import pymongo
-            import certifi
-            
-            self.client = pymongo.MongoClient(self.uri, tlsCAFile=certifi.where())
-            self.db = self.client.get_database('discord_bot')
-            
-            # Test connection
-            self.client.admin.command('ping')
-            self.is_connected = True
-            
-            # Setup basic indexes
-            self.db.users.create_index("user_id", unique=True)
-            self.db.inventory.create_index([("user_id", 1), ("item_id", 1)], unique=True)
-            
-            logger.info("✅ MongoDB connected")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ MongoDB connection failed: {e}")
-            return False
-    
-    def get_collection(self, name):
-        """Get a MongoDB collection."""
-        return self.db[name] if self.is_connected else None
-    
-    async def close(self):
-        """Close database connection."""
-        if self.client:
-            self.client.close()
-            self.is_connected = False
+# Utility functions
+def has_admin_role(member):
+    """Check if member has bot-admin role"""
+    return discord.utils.get(member.roles, name=ADMIN_ROLE) is not None
 
-# ---------------- Bot Class ----------------
-class EconomyBot(commands.Bot):
-    def __init__(self):
-        super().__init__(
-            command_prefix="~~",
-            intents=intents,
-            help_command=None,
-            case_insensitive=True
-        )
-        self.start_time = datetime.now(timezone.utc)
-        self.config_manager = ConfigManager()
-        self.database_manager = DatabaseManager()
-    
-    async def on_ready(self):
-        """Called when bot is ready."""
-        logger.info(f"✅ {self.user} is online!")
-        logger.info(f"📊 Connected to {len(self.guilds)} guilds")
-        
-        # Set status
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{len(self.guilds)} servers | ~~help"
-            )
-        )
-        
-        # Start background tasks after bot is ready
-        self.update_status.start()
-
-    async def setup_hook(self):
-        """Setup hook."""
-        logger.info("🔧 Setting up bot...")
-        os.makedirs("data", exist_ok=True)
-        await self.load_cogs()
-    
-    async def load_cogs(self):
-        """Load all cogs."""
-        cogs = ['admin', 'economy']
-        loaded = 0
-        
-        # Connect to database first
-        await self.database_manager.connect()
-        
-        for cog in cogs:
-            try:
-                await self.load_extension(cog)
-                loaded += 1
-                logger.info(f"✅ Loaded {cog}")
-            except Exception as e:
-                logger.error(f"❌ Failed to load {cog}: {e}")
-        
-        logger.info(f"📊 Loaded {loaded}/{len(cogs)} cogs")
-    
-    @tasks.loop(minutes=5)
-    async def update_status(self):
-        """Update bot status."""
-        try:
-            await self.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.watching,
-                    name=f"{len(self.guilds)} servers | ~~help"
-                )
-            )
-            logger.debug("✅ Status updated")
-        except Exception as e:
-            logger.error(f"Status update failed: {e}")
-
-# Create bot instance
-bot = EconomyBot()
-
-# ---------------- Error Handling ----------------
-@bot.event
-async def on_command_error(ctx, error):
-    """Global error handler."""
-    if isinstance(error, commands.CommandNotFound):
-        return
-    
-    error_embed = discord.Embed(color=discord.Color.red())
-    
-    if isinstance(error, commands.MissingRequiredArgument):
-        error_embed.title = "❌ Missing Argument"
-        error_embed.description = f"Missing: `{error.param.name}`"
-    elif isinstance(error, commands.BadArgument):
-        error_embed.title = "❌ Invalid Argument"
-        error_embed.description = "Check your arguments"
-    elif isinstance(error, commands.MissingPermissions):
-        error_embed.title = "❌ Missing Permissions"
-        error_embed.description = "You don't have permission"
-    elif isinstance(error, commands.CommandOnCooldown):
-        error_embed.title = "⏰ Cooldown"
-        error_embed.description = f"Wait {error.retry_after:.1f}s"
-        error_embed.color = discord.Color.orange()
-    else:
-        logger.error(f"Unexpected error: {error}")
-        error_embed.title = "❌ Error"
-        error_embed.description = "Something went wrong"
-    
+def load_json(filepath):
+    """Load JSON data from file"""
     try:
-        await ctx.send(embed=error_embed, delete_after=10)
-    except discord.Forbidden:
-        pass
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading {filepath}: {e}")
+        return {}
 
-@bot.event
-async def on_message(message):
-    """Message handler."""
-    if message.author.bot:
-        return
-    await bot.process_commands(message)
-
-# ---------------- Commands ----------------
-@bot.command()
-async def ping(ctx):
-    """Check bot latency."""
-    latency = round(bot.latency * 1000)
-    embed = discord.Embed(
-        title="🏓 Pong!",
-        description=f"Latency: {latency}ms",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def reload(ctx):
-    """Reload cogs."""
-    msg = await ctx.send("🔄 Reloading...")
-    
-    # Reload cogs
-    reloaded = 0
-    for cog in list(bot.extensions.keys()):
-        try:
-            await bot.reload_extension(cog)
-            reloaded += 1
-        except Exception as e:
-            logger.error(f"Failed to reload {cog}: {e}")
-    
-    await msg.edit(content=f"✅ Reloaded {reloaded} cogs")
-
-@bot.command()
-async def status(ctx):
-    """Check bot status."""
-    embed = discord.Embed(title="🤖 Bot Status", color=discord.Color.blue())
-    
-    embed.add_field(name="Uptime", value=str(datetime.now(timezone.utc) - bot.start_time).split('.')[0], inline=True)
-    embed.add_field(name="Latency", value=f"{round(bot.latency * 1000)}ms", inline=True)
-    embed.add_field(name="Servers", value=len(bot.guilds), inline=True)
-    embed.add_field(name="Database", value="✅" if bot.database_manager.is_connected else "❌", inline=True)
-    embed.add_field(name="Cogs", value=len(bot.cogs), inline=True)
-    
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def help(ctx):
-    """Show help."""
-    embed = discord.Embed(
-        title="🤖 Economy Bot Help",
-        description="Available commands:",
-        color=discord.Color.blue()
-    )
-    
-    embed.add_field(
-        name="💰 Economy",
-        value="• `~~balance` - Check balance\n• `~~daily` - Daily reward\n• `~~work` - Earn money\n• `~~crime` - Risky earnings\n• `~~shop` - Browse items\n• `~~buy <id>` - Buy item\n• `~~inventory` - View items\n• `~~leaderboard` - Top users",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🔧 Utility", 
-        value="• `~~ping` - Check latency\n• `~~status` - Bot status\n• `~~help` - This message",
-        inline=False
-    )
-    
-    if ctx.author.guild_permissions.administrator:
-        embed.add_field(
-            name="🛡️ Admin",
-            value="• `~~reload` - Reload cogs\n• `~~economygive @user amount` - Give money\n• `~~economytake @user amount` - Take money",
-            inline=False
-        )
-    
-    await ctx.send(embed=embed)
-
-# ---------------- Web Server ----------------
-def start_web_server():
-    """Start web server for keep-alive."""
+def save_json(filepath, data):
+    """Save JSON data to file"""
     try:
-        from flask import Flask
-        import threading
-        
-        app = Flask(__name__)
-        
-        @app.route('/')
-        def home():
-            return "Bot is running!"
-        
-        @app.route('/health')
-        def health():
-            return "OK"
-        
-        @app.route('/ping')
-        def ping():
-            return "pong"
-        
-        def run():
-            import waitress
-            waitress.serve(app, host='0.0.0.0', port=8080)
-        
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-        logger.info("✅ Web server started on port 8080")
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
         return True
     except Exception as e:
-        logger.error(f"❌ Web server failed: {e}")
+        logger.error(f"Error saving {filepath}: {e}")
         return False
 
-# ---------------- Main ----------------
-if __name__ == "__main__":
-    try:
-        logger.info("🚀 Starting bot...")
-        
-        if not TOKEN:
-            logger.critical("❌ No DISCORD_TOKEN")
-            sys.exit(1)
-        
-        # Start web server
-        if KEEP_ALIVE:
-            start_web_server()
-        
-        # Run bot - this will start the event loop
-        bot.run(TOKEN)
-        
-    except KeyboardInterrupt:
-        logger.info("⏹️ Bot stopped")
-        if bot.database_manager.is_connected:
-            bot.database_manager.close()
-    except Exception as e:
-        logger.critical(f"❌ Bot failed: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+# Error handling
+@bot.event
+async def on_command_error(ctx, error):
+    """Global error handler"""
+    if isinstance(error, commands.MissingRequiredArgument):
+        embed = discord.Embed(
+            title="❌ Missing Argument",
+            description=f"Missing required argument: `{error.param.name}`",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+    
+    elif isinstance(error, commands.MissingPermissions):
+        embed = discord.Embed(
+            title="❌ Missing Permissions",
+            description="You don't have permission to use this command.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+    
+    elif isinstance(error, commands.CommandNotFound):
+        return  # Ignore unknown commands
+    
+    else:
+        logger.error(f"Error in command {ctx.command}: {error}")
+        embed = discord.Embed(
+            title="⚠️ Error",
+            description="An unexpected error occurred.",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+
+# Events
+@bot.event
+async def on_ready():
+    """Called when bot is ready"""
+    logger.info(f'Bot logged in as {bot.user.name} (ID: {bot.user.id})')
+    logger.info(f'Connected to {len(bot.guilds)} guild(s)')
+    
+    # Initialize data files
+    init_data_files()
+    
+    # Set bot status
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="!help | Economy Bot"
+        )
+    )
+    
+    logger.info('Bot is ready!')
+
+@bot.event
+async def on_guild_join(guild):
+    """Called when bot joins a guild"""
+    logger.info(f'Joined guild: {guild.name} (ID: {guild.id})')
+
+@bot.event
+async def on_guild_remove(guild):
+    """Called when bot leaves a guild"""
+    logger.info(f'Left guild: {guild.name} (ID: {guild.id})')
+
+# Basic help command
+@bot.command(name='help')
+async def help_command(ctx, category: str = None):
+    """Display help information"""
+    
+    if category is None:
+        embed = discord.Embed(
+            title="🤖 Bot Help",
+            description="Choose a category to see commands:",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="📋 General",
+            value="`!help general` - Server management commands",
+            inline=False
+        )
+        embed.add_field(
+            name="👑 Admin",
+            value="`!help admin` - Admin-only commands",
+            inline=False
+        )
+        embed.add_field(
+            name="💰 Economy",
+            value="`!help economy` - Economy, jobs, and market commands",
+            inline=False
+        )
+        embed.set_footer(text="Use !help <category> for detailed commands")
+        await ctx.send(embed=embed)
+    
+    elif category.lower() == 'general':
+        embed = discord.Embed(
+            title="📋 General Commands",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="!clear <amount>",
+            value="Clear messages from channel",
+            inline=False
+        )
+        embed.add_field(
+            name="!ping",
+            value="Check bot latency",
+            inline=False
+        )
+        embed.add_field(
+            name="!serverinfo",
+            value="Display server information",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+    
+    elif category.lower() == 'admin':
+        embed = discord.Embed(
+            title="👑 Admin Commands",
+            description="Requires `bot-admin` role",
+            color=discord.Color.gold()
+        )
+        embed.add_field(
+            name="Coming Soon",
+            value="Admin commands will be added in the next file",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+    
+    elif category.lower() == 'economy':
+        embed = discord.Embed(
+            title="💰 Economy Commands",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="Coming Soon",
+            value="Economy commands will be added in the next file",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+    
+    else:
+        embed = discord.Embed(
+            title="❌ Unknown Category",
+            description="Valid categories: `general`, `admin`, `economy`",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
+
+# Load cogs (we'll add these later)
+async def load_extensions():
+    """Load all cog extensions"""
+    extensions = ['general', 'admin', 'economy']
+    
+    for extension in extensions:
+        try:
+            await bot.load_extension(extension)
+            logger.info(f'Loaded extension: {extension}')
+        except Exception as e:
+            logger.error(f'Failed to load extension {extension}: {e}')
+
+# Setup hook
+@bot.event
+async def setup_hook():
+    """Called before bot starts"""
+    await load_extensions()
+
+# Run the bot
+if __name__ == '__main__':
+    if not TOKEN:
+        logger.error("DISCORD_TOKEN not found in environment variables!")
+    else:
+        try:
+            bot.run(TOKEN)
+        except Exception as e:
+            logger.critical(f"Failed to start bot: {e}")
