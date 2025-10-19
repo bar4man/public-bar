@@ -177,7 +177,7 @@ class Bot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="~~help | Economy & Games"
+                name="~~help | Economy & Markets"
             ),
             status=discord.Status.online
         )
@@ -362,7 +362,7 @@ async def before_auto_cleaner():
 @bot.command(name="help")
 async def help_command(ctx: commands.Context, category: str = None):
     """Main help command with categories. Use ~~help admin or ~~help economy."""
-    if category and category.lower() in ["admin", "economy"]:
+    if category and category.lower() in ["admin", "economy", "market"]:
         await _show_category_help(ctx, category.lower())
     else:
         await _show_general_help(ctx)
@@ -394,8 +394,10 @@ async def _show_general_help(ctx: commands.Context):
         value=(
             "**~~help admin** - Moderation and server management\n"
             "**~~help economy** - Money, games, and economy system\n"
+            "**~~help market** - Stock market and gold trading\n"
             "**~~admin** - Direct admin commands\n"
-            "**~~economy** - Direct economy commands"
+            "**~~economy** - Direct economy commands\n"
+            "**~~market** - Direct market commands"
         ),
         inline=False
     )
@@ -404,13 +406,14 @@ async def _show_general_help(ctx: commands.Context):
         name="💡 Quick Start",
         value=(
             "• Use `~~economy` to see money commands\n"
+            "• Use `~~market` for stock trading\n"
             "• Use `~~admin` for moderation tools\n"
             "• Most commands have cooldowns for balance"
         ),
         inline=False
     )
     
-    embed.set_footer(text=f"Use ~~help admin or ~~help economy for detailed commands")
+    embed.set_footer(text=f"Use ~~help <category> for detailed commands")
     await ctx.send(embed=embed)
 
 async def _show_category_help(ctx: commands.Context, category: str):
@@ -419,6 +422,8 @@ async def _show_category_help(ctx: commands.Context, category: str):
         await _show_admin_help(ctx)
     elif category == "economy":
         await _show_economy_help(ctx)
+    elif category == "market":
+        await _show_market_help(ctx)
 
 async def _show_admin_help(ctx: commands.Context):
     """Show admin/moderation commands."""
@@ -569,6 +574,78 @@ async def _show_economy_help(ctx: commands.Context):
     embed.set_footer(text="Most commands have cooldowns - check individual command help")
     await ctx.send(embed=embed)
 
+async def _show_market_help(ctx: commands.Context):
+    """Show market and trading commands."""
+    embed = discord.Embed(
+        title="🏛️ Market & Trading Commands",
+        description="Stock market, gold trading, and investment portfolio management.",
+        color=discord.Color.green()
+    )
+    
+    # Market Information
+    info_cmds = [
+        "`market` - View current market status",
+        "`stocks [symbol]` - View stock information",
+        "`gold` - View gold market information",
+        "`news` - View market news and events"
+    ]
+    
+    embed.add_field(
+        name="📊 Market Information",
+        value="\n".join(info_cmds),
+        inline=False
+    )
+    
+    # Trading Commands
+    trading_cmds = [
+        "`buy stock <symbol> <shares>` - Buy stock shares",
+        "`buy gold <ounces>` - Buy gold ounces", 
+        "`sell stock <symbol> <shares>` - Sell stock shares",
+        "`sell gold <ounces>` - Sell gold ounces"
+    ]
+    
+    embed.add_field(
+        name="💹 Trading Commands",
+        value="\n".join(trading_cmds),
+        inline=False
+    )
+    
+    # Portfolio Management
+    portfolio_cmds = [
+        "`portfolio [member]` - View investment portfolio",
+        "`port [member]` - Shortcut for portfolio"
+    ]
+    
+    embed.add_field(
+        name="💼 Portfolio Management",
+        value="\n".join(portfolio_cmds),
+        inline=False
+    )
+    
+    # Available Stocks
+    stocks_list = "TECH, ENERGY, BANK, PHARMA, AUTO"
+    embed.add_field(
+        name="📈 Available Stocks",
+        value=f"**Symbols:** {stocks_list}\nUse `~~stocks <symbol>` for details",
+        inline=False
+    )
+    
+    # Trading Information
+    embed.add_field(
+        name="💡 Trading Information",
+        value=(
+            "• **Market Hours:** 9 AM - 5 PM UTC\n"
+            "• **Stock Fees:** 0.5% per transaction\n"
+            "• **Gold Fees:** 1% per transaction\n"
+            "• **Funding:** All trades use BANK money\n"
+            "• **Portfolio:** Track your investments with `~~portfolio`"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Market prices update every 5 minutes during trading hours")
+    await ctx.send(embed=embed)
+
 # ---------------- New Category Help Commands ----------------
 @bot.command(name="admin")
 async def admin_help(ctx: commands.Context):
@@ -580,10 +657,15 @@ async def economy_help(ctx: commands.Context):
     """Direct economy help command."""
     await _show_economy_help(ctx)
 
+@bot.command(name="market")
+async def market_help(ctx: commands.Context):
+    """Direct market help command."""
+    await _show_market_help(ctx)
+
 # ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
-    cogs = ["admin", "economy"]
+    cogs = ["admin", "economy", "market"]
     loaded_count = 0
     
     for cog in cogs:
@@ -611,7 +693,7 @@ async def load_cogs():
 
 async def reload_cogs():
     """Reload all cogs."""
-    cogs = ["admin", "economy"]
+    cogs = ["admin", "economy", "market"]
     for cog in cogs:
         try:
             await bot.reload_extension(cog)
@@ -642,7 +724,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="~~help | Economy & Games"
+            name="~~help | Economy & Markets"
         ),
         status=discord.Status.online
     )
