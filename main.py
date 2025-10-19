@@ -6,7 +6,6 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 from database import db
-import webserver
 
 # Load environment variables
 load_dotenv()
@@ -320,8 +319,6 @@ if __name__ == '__main__':
         logger.error("DISCORD_TOKEN not found in environment variables!")
     else:
         try:
-            # Start web keep-alive server for Render
-            webserver.keep_alive()
             bot.run(TOKEN)
         except Exception as e:
             logger.critical(f"Failed to start bot: {e}")
