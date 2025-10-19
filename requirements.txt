@@ -1,9 +1,8 @@
-discord.py
-Flask
-python-dotenv
-aiofiles
-psutil
-waitress
-motor
-pymongo
-
+discord.py[voice]==2.3.2
+Flask==2.3.3
+python-dotenv==1.0.0
+aiofiles==23.2.1
+pymongo==4.5.0
+dnspython==2.4.2
+certifi==2023.11.17
+waitress==2.1.2
