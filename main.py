@@ -6,8 +6,6 @@ import os
 import asyncio
 import json
 from datetime import datetime, timezone, timedelta
-import webserver
-import aiohttp
 import sys
 import traceback
 
@@ -55,11 +53,13 @@ except ImportError as e:
     logging.error("Please check your requirements.txt and virtual environment")
     sys.exit(1)
 
-# Discord intents with validation
+# Discord intents with validation (voice disabled)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
+# Disable voice-related intents to avoid audioop dependency
+intents.voice_states = False
 
 # ---------------- Manager Classes ----------------
 class ConfigManager:
@@ -191,7 +191,7 @@ class DatabaseManager:
             self.client.admin.command('ping')
             self.is_connected = True
             
-            # Setup indexes using database_schemas
+            # Setup indexes
             await self._setup_indexes()
             
             logging.info("✅ Successfully connected to MongoDB")
@@ -205,19 +205,12 @@ class DatabaseManager:
     async def _setup_indexes(self):
         """Create necessary database indexes."""
         try:
-            # Import and initialize database schemas
-            from database_schemas import DatabaseSchemas
-            schemas = DatabaseSchemas(self.db)
-            await schemas.initialize_database()
-            
-            logging.info("✅ Database indexes and schemas initialized")
-        except ImportError:
-            logging.warning("⚠️ database_schemas.py not found, creating basic indexes")
-            # Fallback basic indexes
+            # Basic indexes for economy system
             self.db.users.create_index("user_id", unique=True)
-            self.db.market_positions.create_index([("user_id", 1), ("commodity", 1)])
-            self.db.market_trades.create_index([("user_id", 1), ("timestamp", -1)])
-            self.db.market_portfolios.create_index("user_id", unique=True)
+            self.db.inventory.create_index([("user_id", 1), ("item_id", 1)], unique=True)
+            self.db.cooldowns.create_index([("user_id", 1), ("command", 1)], unique=True)
+            
+            logging.info("✅ Database indexes initialized")
         except Exception as e:
             logging.error(f"❌ Failed to setup indexes: {e}")
     
@@ -227,17 +220,6 @@ class DatabaseManager:
             logging.error("Database not connected")
             return None
         return self.db[name]
-    
-    async def get_stats(self):
-        """Get database statistics."""
-        try:
-            from database_schemas import DatabaseSchemas
-            schemas = DatabaseSchemas(self.db)
-            return await schemas.get_database_stats()
-        except ImportError:
-            return {'error': 'database_schemas.py not available'}
-        except Exception as e:
-            return {'error': str(e)}
     
     async def close(self):
         """Close database connection."""
@@ -272,25 +254,21 @@ class Bot(commands.Bot):
         logging.info(f"✅ Bot is ready as {self.user} (ID: {self.user.id})")
         logging.info(f"📊 Connected to {len(self.guilds)} guild(s)")
         
+        # Log guild names
+        for guild in self.guilds:
+            logging.info(f"   - {guild.name} (ID: {guild.id}, Members: {guild.member_count})")
+        
         # Set bot status
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="~~help | Economy & Markets"
+                name="~~help | Economy System"
             ),
             status=discord.Status.online
         )
 
 # Create bot instance
 bot = Bot()
-
-# Register bot with web server for status monitoring
-try:
-    import webserver
-    webserver.set_bot(bot)
-    logging.info("✅ Bot registered with web server for status monitoring")
-except Exception as e:
-    logging.warning(f"❌ Could not register bot with web server: {e}")
 
 # ---------------- Error Handling ----------------
 @bot.event
@@ -374,9 +352,9 @@ async def on_message(message):
     
     await bot.process_commands(message)
 
-# ---------------- Simplified Cog Loader ----------------
+# ---------------- Cog Management ----------------
 async def load_cogs():
-    """Simplified cog loader for flat structure."""
+    """Load all cogs with error handling."""
     loaded_count = 0
     
     # Connect to database first
@@ -384,12 +362,10 @@ async def load_cogs():
     if not db_connected:
         logging.error("❌ Database connection failed - some features may not work")
     
-    # List of cog files in root directory
+    # List of cog files to load
     cog_files = [
         'admin',
-        'economy', 
-        'market_cog',
-        'test_cog'
+        'economy'
     ]
     
     for cog_file in cog_files:
@@ -433,29 +409,10 @@ async def setup_hook():
     
     # Create necessary directories
     os.makedirs("data", exist_ok=True)
-    os.makedirs("markets/config", exist_ok=True)
     logging.info("📁 Directories initialized")
     
     await load_cogs()
     logging.info("✅ Setup hook completed")
-
-@bot.event
-async def on_ready():
-    """Enhanced on_ready with more detailed startup info."""
-    logging.info(f"✅ Bot is ready as {bot.user} (ID: {bot.user.id})")
-    logging.info(f"📊 Connected to {len(bot.guilds)} guild(s)")
-    
-    # Log guild names
-    for guild in bot.guilds:
-        logging.info(f"   - {guild.name} (ID: {guild.id}, Members: {guild.member_count})")
-    
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="~~help | Economy & Markets"
-        ),
-        status=discord.Status.online
-    )
 
 # ---------------- Utility Commands ----------------
 @bot.command(name="ping", brief="Check bot latency")
@@ -537,33 +494,156 @@ async def status_command(ctx: commands.Context):
     
     await ctx.send(embed=embed)
 
-# ---------------- Keep Alive ----------------
-if KEEP_ALIVE:
+@bot.command(name="help")
+async def help_command(ctx: commands.Context):
+    """Show help information."""
+    embed = discord.Embed(
+        title="🤖 Bot Help",
+        description="Here are the available commands:",
+        color=discord.Color.blue()
+    )
+    
+    # Economy commands
+    embed.add_field(
+        name="💰 Economy Commands",
+        value=(
+            "`~~balance` - Check your balance\n"
+            "`~~daily` - Claim daily reward\n"
+            "`~~work` - Work to earn money\n"
+            "`~~crime` - Commit a crime (risky!)\n"
+            "`~~deposit <amount|all>` - Deposit to bank\n"
+            "`~~withdraw <amount|all>` - Withdraw from bank\n"
+            "`~~transfer @user <amount>` - Send money to user\n"
+            "`~~shop` - Browse the shop\n"
+            "`~~buy <item_id>` - Buy an item\n"
+            "`~~inventory` - View your inventory\n"
+            "`~~leaderboard` - View wealth rankings"
+        ),
+        inline=False
+    )
+    
+    # Utility commands
+    embed.add_field(
+        name="🔧 Utility Commands",
+        value=(
+            "`~~ping` - Check bot latency\n"
+            "`~~status` - View bot status\n"
+            "`~~help` - Show this message"
+        ),
+        inline=False
+    )
+    
+    # Admin commands (only show if user has admin perms)
+    if ctx.author.guild_permissions.administrator:
+        embed.add_field(
+            name="🛡️ Admin Commands",
+            value=(
+                "`~~reload` - Reload all cogs\n"
+                "`~~clear <amount>` - Delete messages\n"
+                "`~~kick @user <reason>` - Kick a user\n"
+                "`~~ban @user <reason>` - Ban a user\n"
+                "`~~mute @user <reason>` - Mute a user\n"
+                "`~~unmute @user <reason>` - Unmute a user\n"
+                "`~~economygive @user <amount>` - Give money to user\n"
+                "`~~economytake @user <amount>` - Take money from user"
+            ),
+            inline=False
+        )
+    
+    embed.set_footer(text="Use ~~ before each command. Example: ~~balance")
+    
+    await ctx.send(embed=embed)
+
+# ---------------- Background Tasks ----------------
+@tasks.loop(minutes=5)
+async def update_presence():
+    """Update bot presence periodically."""
     try:
-        import webserver
-        success = webserver.keep_alive()
-        if success:
-            logging.info("✅ Keep-alive web server initialized")
-        else:
-            logging.warning("❌ Keep-alive web server failed to start")
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"{len(bot.guilds)} servers | ~~help"
+        )
+        await bot.change_presence(activity=activity)
     except Exception as e:
-        logging.error(f"❌ Keep-alive setup failed: {e}")
+        logging.error(f"Error updating presence: {e}")
+
+@tasks.loop(hours=1)
+async def database_health_check():
+    """Periodic database health check."""
+    try:
+        if bot.database_manager.is_connected:
+            # Test connection
+            bot.database_manager.client.admin.command('ping')
+            logging.info("✅ Database health check passed")
+        else:
+            logging.warning("⚠️ Database not connected, attempting reconnect...")
+            await bot.database_manager.connect()
+    except Exception as e:
+        logging.error(f"❌ Database health check failed: {e}")
+
+# ---------------- Startup Tasks ----------------
+@update_presence.before_loop
+@database_health_check.before_loop
+async def before_tasks():
+    """Wait until bot is ready before starting tasks."""
+    await bot.wait_until_ready()
+
+# ---------------- Web Server (Keep Alive) ----------------
+def start_web_server():
+    """Start a simple web server for keep-alive."""
+    try:
+        from flask import Flask
+        app = Flask(__name__)
+
+        @app.route('/')
+        def home():
+            return "Bot is running!"
+
+        @app.route('/health')
+        def health():
+            return "OK"
+
+        import threading
+        import waitress
+        
+        def run_server():
+            waitress.serve(app, host='0.0.0.0', port=8080)
+        
+        thread = threading.Thread(target=run_server, daemon=True)
+        thread.start()
+        logging.info("✅ Web server started on port 8080")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to start web server: {e}")
+        return False
 
 # ---------------- Run Bot ----------------
 if __name__ == "__main__":
     try:
         logging.info("🚀 Starting bot...")
         logging.info(f"📁 Current directory: {os.getcwd()}")
-        logging.info(f"📁 Python path: {sys.path}")
         
         if not TOKEN:
             logging.critical("❌ DISCORD_TOKEN environment variable not set!")
             exit(1)
-            
+        
+        # Start web server for keep-alive
+        if KEEP_ALIVE:
+            start_web_server()
+        
+        # Start background tasks
+        update_presence.start()
+        database_health_check.start()
+        
+        # Run the bot
         bot.run(TOKEN)
         
     except KeyboardInterrupt:
         logging.info("⏹️ Bot stopped by user")
+        # Stop background tasks
+        update_presence.cancel()
+        database_health_check.cancel()
+        # Close database connection
         if bot.database_manager.is_connected:
             bot.database_manager.close()
     except discord.LoginFailure:
