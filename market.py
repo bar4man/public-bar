@@ -382,7 +382,7 @@ class MarketCog(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="buy")
+    @commands.command(name="buyasset", aliases=["buy"])
     async def buy_asset(self, ctx: commands.Context, asset_type: str, symbol: str = None, amount: float = None):
         """Buy stocks or gold."""
         if not self.market.market_open:
@@ -459,7 +459,7 @@ class MarketCog(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="sell")
+    @commands.command(name="sellasset", aliases=["sell"])
     async def sell_asset(self, ctx: commands.Context, asset_type: str, symbol: str = None, amount: float = None):
         """Sell stocks or gold."""
         if not self.market.market_open:
