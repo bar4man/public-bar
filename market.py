@@ -382,7 +382,7 @@ class MarketCog(commands.Cog):
         
         await ctx.send(embed=embed)
     
-    @commands.command(name="buyasset", aliases=["buy"])
+    @commands.command(name="buyasset")
     async def buy_asset(self, ctx: commands.Context, asset_type: str, symbol: str = None, amount: float = None):
         """Buy stocks or gold."""
         if not self.market.market_open:
@@ -392,7 +392,7 @@ class MarketCog(commands.Cog):
         
         if asset_type.lower() not in ["stock", "gold"]:
             embed = await self.create_market_embed("❌ Invalid Asset Type", discord.Color.red())
-            embed.description = "Available types: `stock`, `gold`\nExample: `~~buy stock TECH 10`"
+            embed.description = "Available types: `stock`, `gold`\nExample: `~~buyasset stock TECH 10`"
             return await ctx.send(embed=embed)
         
         if amount is None or amount <= 0:
