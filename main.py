@@ -177,7 +177,7 @@ class Bot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="~~help | Economy & Markets"
+                name="~~help | Economy & Games"
             ),
             status=discord.Status.online
         )
@@ -362,7 +362,7 @@ async def before_auto_cleaner():
 @bot.command(name="help")
 async def help_command(ctx: commands.Context, category: str = None):
     """Main help command with categories. Use ~~help admin or ~~help economy."""
-    if category and category.lower() in ["admin", "economy", "markets"]:
+    if category and category.lower() in ["admin", "economy", "markets", "gambling"]:
         await _show_category_help(ctx, category.lower())
     else:
         await _show_general_help(ctx)
@@ -393,11 +393,13 @@ async def _show_general_help(ctx: commands.Context):
         name="📁 Command Categories",
         value=(
             "**~~help admin** - Moderation and server management\n"
-            "**~~help economy** - Money, games, and economy system\n"
+            "**~~help economy** - Money, work, and daily rewards\n"
             "**~~help markets** - Stock market and gold trading\n"
+            "**~~help gambling** - Games and betting\n"
             "**~~admin** - Direct admin commands\n"
             "**~~economy** - Direct economy commands\n"
-            "**~~markets** - Direct market commands"
+            "**~~markets** - Direct market commands\n"
+            "**~~gambling** - Direct gambling commands"
         ),
         inline=False
     )
@@ -407,6 +409,7 @@ async def _show_general_help(ctx: commands.Context):
         value=(
             "• Use `~~economy` to see money commands\n"
             "• Use `~~markets` for stock trading\n"
+            "• Use `~~gambling` for fun games\n"
             "• Use `~~admin` for moderation tools\n"
             "• Most commands have cooldowns for balance"
         ),
@@ -424,6 +427,8 @@ async def _show_category_help(ctx: commands.Context, category: str):
         await _show_economy_help(ctx)
     elif category == "markets":
         await _show_markets_help(ctx)
+    elif category == "gambling":
+        await _show_gambling_help(ctx)
 
 async def _show_admin_help(ctx: commands.Context):
     """Show admin/moderation commands."""
@@ -496,8 +501,8 @@ async def _show_admin_help(ctx: commands.Context):
 async def _show_economy_help(ctx: commands.Context):
     """Show economy and game commands."""
     embed = discord.Embed(
-        title="💰 Economy & Games Commands", 
-        description="Money management, games, and earning opportunities.",
+        title="💰 Economy Commands", 
+        description="Money management, work, and daily rewards.",
         color=discord.Color.gold()
     )
     
@@ -521,25 +526,13 @@ async def _show_economy_help(ctx: commands.Context):
     # Earning Commands
     earning_cmds = [
         "`daily` - Claim daily reward (24h cooldown)",
-        "`work` - Work for money (1h cooldown)"
+        "`work` - Work for money (1h cooldown)",
+        "`beg` - Beg for small amounts of money (5min cooldown)"
     ]
     
     embed.add_field(
         name="💼 Earning Money",
         value="\n".join(earning_cmds),
-        inline=False
-    )
-    
-    # Gambling Commands
-    gambling_cmds = [
-        "`flip <heads/tails> <bet>` - Coin flip game (2x)",
-        "`dice <bet>` - Dice game (6x for rolling 6)",
-        "`slots <bet>` - Slot machine (up to 50x)"
-    ]
-    
-    embed.add_field(
-        name="🎰 Gambling Games",
-        value="\n".join(gambling_cmds),
         inline=False
     )
     
@@ -562,7 +555,7 @@ async def _show_economy_help(ctx: commands.Context):
         name="💡 Important Notes",
         value=(
             "• **Shop purchases use BANK money**\n"
-            "• **Payments/Gambling use WALLET money**\n"
+            "• **Payments use WALLET money**\n"
             "• **Excess money is LOST** if over limits\n"
             "• **Penalty:** Lose 1£ for impossible deposits\n"
             "• Use `~~deposit` to move money to bank\n"
@@ -587,7 +580,8 @@ async def _show_markets_help(ctx: commands.Context):
         "`market` - View current market status",
         "`stocks [symbol]` - View stock information",
         "`gold` - View gold market information",
-        "`news` - View market news and events"
+        "`news` - View market news and events",
+        "`topmovers` - View today's biggest stock movements"
     ]
     
     embed.add_field(
@@ -646,6 +640,69 @@ async def _show_markets_help(ctx: commands.Context):
     embed.set_footer(text="Market prices update every 5 minutes during trading hours")
     await ctx.send(embed=embed)
 
+async def _show_gambling_help(ctx: commands.Context):
+    """Show gambling and game commands."""
+    embed = discord.Embed(
+        title="🎰 Gambling & Games Commands",
+        description="Fun games with improved odds and rewards!",
+        color=discord.Color.purple()
+    )
+    
+    # Gambling Games
+    gambling_cmds = [
+        "`flip <heads/tails> <bet>` - Coin flip (55% win chance, 1.8x payout)",
+        "`dice <bet>` - Dice game (50% win chance, multiple payouts)",
+        "`slots <bet>` - Slot machine (better odds, two-matching wins)",
+        "`rps <rock/paper/scissors> <bet>` - Rock Paper Scissors (2x win, tie returns bet)",
+        "`beg` - Beg for money (5min cooldown)"
+    ]
+    
+    embed.add_field(
+        name="🎲 Gambling Games",
+        value="\n".join(gambling_cmds),
+        inline=False
+    )
+    
+    # Game Details
+    embed.add_field(
+        name="💰 Coin Flip",
+        value="**Win Chance:** 55%\n**Payout:** 1.8x your bet\n**Cooldown:** 3 seconds",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🎯 Dice Game", 
+        value="**Winning Numbers:** 4, 5, 6\n**Payouts:** 1.5x, 2x, 5x\n**Cooldown:** 4 seconds",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🎰 Slots",
+        value="**Three Matching:** Up to 30x\n**Two Matching:** 1.2x\n**Cooldown:** 5 seconds",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="✂️ Rock Paper Scissors",
+        value="**Win:** 2x your bet\n**Tie:** Return your bet\n**Lose:** Lose your bet\n**Cooldown:** 3 seconds",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🙏 Begging",
+        value="**Amount:** 10-70£ randomly\n**Cooldown:** 5 minutes\n**Success Rate:** High",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="💡 Tips",
+        value="• All games use WALLET money\n• Items can boost your chances\n• Don't bet more than you can afford!",
+        inline=True
+    )
+    
+    embed.set_footer(text="Games have improved odds for better player experience!")
+    await ctx.send(embed=embed)
+
 # ---------------- New Category Help Commands ----------------
 @bot.command(name="admin")
 async def admin_help(ctx: commands.Context):
@@ -662,10 +719,15 @@ async def markets_help(ctx: commands.Context):
     """Direct markets help command."""
     await _show_markets_help(ctx)
 
+@bot.command(name="gambling")
+async def gambling_help(ctx: commands.Context):
+    """Direct gambling help command."""
+    await _show_gambling_help(ctx)
+
 # ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
-    cogs = ["admin", "economy", "market"]
+    cogs = ["admin", "economy", "market", "gambling"]
     loaded_count = 0
     
     for cog in cogs:
@@ -693,7 +755,7 @@ async def load_cogs():
 
 async def reload_cogs():
     """Reload all cogs."""
-    cogs = ["admin", "economy", "market"]
+    cogs = ["admin", "economy", "market", "gambling"]
     for cog in cogs:
         try:
             await bot.reload_extension(cog)
@@ -724,7 +786,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="~~help | Economy & Markets"
+            name="~~help | Economy & Games"
         ),
         status=discord.Status.online
     )
