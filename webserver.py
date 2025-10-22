@@ -80,35 +80,21 @@ def run():
     
     try:
         # Use Render's PORT environment variable - this is REQUIRED
-        port = int(os.getenv('PORT', 10000))
+        port = int(os.getenv('PORT', 8080))
         host = '0.0.0.0'
         
         web_server_port = port
         logger.info(f"🚀 Starting web server on {host}:{port}")
         
-        # Try using a production WSGI server first
-        try:
-            from waitress import serve
-            logger.info(f"✅ Using Waitress production server on port {port}")
-            web_server_started = True
-            serve(app, host=host, port=port, threads=4, _quiet=False)
-        except ImportError:
-            # Fallback to Flask development server
-            logger.warning("⚠️ Waitress not available, using Flask development server")
-            web_server_started = True
-            app.run(host=host, port=port, debug=False, use_reloader=False)
+        # Use production server
+        from waitress import serve
+        logger.info(f"✅ Using Waitress production server on port {port}")
+        web_server_started = True
+        serve(app, host=host, port=port, threads=2, _quiet=True)  # Reduced threads for free plan
         
     except Exception as e:
         logger.error(f"❌ Web server error: {e}")
         web_server_started = False
-        # Try alternative port if main fails
-        try:
-            port = 8080
-            logger.info(f"🔄 Trying alternative port {port}")
-            from waitress import serve
-            serve(app, host='0.0.0.0', port=port, threads=4, _quiet=False)
-        except Exception as e2:
-            logger.error(f"❌ Alternative port also failed: {e2}")
 
 def keep_alive():
     """Start the keep-alive web server in a separate thread."""
