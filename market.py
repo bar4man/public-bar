@@ -428,21 +428,24 @@ class MarketCog(commands.Cog):
         return movers[:count]
     
     async def get_user_portfolio(self, user_id: int) -> Dict:
-        """Get user's investment portfolio."""
-        user = await db.get_user(user_id)
-        portfolio = user.get("portfolio", {
+        """Get user's investment portfolio using economy cog."""
+        economy_cog = self.bot.get_cog("Economy")
+        if economy_cog:
+            return await economy_cog.get_user_portfolio(user_id)
+        return {
             "gold_ounces": 0.0,
             "stocks": {},
             "total_investment": 0,
             "total_value": 0,
             "daily_pnl": 0,
             "total_pnl": 0
-        })
-        return portfolio
+        }
     
     async def update_user_portfolio(self, user_id: int, portfolio: Dict):
-        """Update user's investment portfolio."""
-        await db.update_user(user_id, {"portfolio": portfolio})
+        """Update user's investment portfolio using economy cog."""
+        economy_cog = self.bot.get_cog("Economy")
+        if economy_cog:
+            await economy_cog.update_user_portfolio(user_id, portfolio)
     
     async def create_market_embed(self, title: str, color: discord.Color = discord.Color.blue()) -> discord.Embed:
         """Create a standardized market embed."""
@@ -622,15 +625,24 @@ class MarketCog(commands.Cog):
             if symbol in self.market.stocks:
                 stock_value = shares * self.market.stocks[symbol]["price"]
                 stocks_value += stock_value
-                stocks_text += f"**{symbol}**: {shares:,} shares (${stock_value:,.2f})\n"
+                change = self.market.get_price_change(symbol)
+                change_emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+                stocks_text += f"**{symbol}**: {shares:,} shares (${stock_value:,.2f}) {change:+.1f}% {change_emoji}\n"
         
         total_value += stocks_value
+        
+        # Calculate P&L
+        total_investment = portfolio.get("total_investment", 0)
+        total_pnl = total_value - total_investment
+        pnl_percentage = (total_pnl / total_investment * 100) if total_investment > 0 else 0
         
         # Portfolio summary
         embed.add_field(
             name="📊 Portfolio Summary",
             value=(
                 f"**Total Value:** ${total_value:,.2f}\n"
+                f"**Total Investment:** ${total_investment:,.2f}\n"
+                f"**Total P&L:** ${total_pnl:,.2f} ({pnl_percentage:+.1f}%)\n"
                 f"**Gold:** ${gold_value:,.2f}\n"
                 f"**Stocks:** ${stocks_value:,.2f}"
             ),
@@ -641,9 +653,11 @@ class MarketCog(commands.Cog):
             embed.add_field(name="📈 Stock Holdings", value=stocks_text, inline=False)
         
         if portfolio.get("gold_ounces", 0) > 0:
+            gold_change = ((self.market.gold_price - 1850) / 1850 * 100)  # Based on starting price
+            gold_emoji = "📈" if gold_change > 0 else "📉" if gold_change < 0 else "➡️"
             embed.add_field(
                 name="🥇 Gold Holdings", 
-                value=f"{portfolio['gold_ounces']:,.2f} ounces (${gold_value:,.2f})",
+                value=f"{portfolio['gold_ounces']:,.2f} ounces (${gold_value:,.2f})\nGold Price: ${self.market.gold_price:,.2f} {gold_change:+.1f}% {gold_emoji}",
                 inline=False
             )
         
@@ -654,7 +668,8 @@ class MarketCog(commands.Cog):
                     "Your portfolio is empty! Start investing with:\n"
                     "• `~~buy gold <ounces>` - Buy gold\n"
                     "• `~~buy stock <symbol> <shares>` - Buy stocks\n"
-                    "• `~~market` - View current prices"
+                    "• `~~market` - View current prices\n"
+                    "**Remember:** All investments use BANK money!"
                 ),
                 inline=False
             )
@@ -748,11 +763,12 @@ class MarketCog(commands.Cog):
                         return await ctx.send(embed=embed)
                     
                     # Process purchase
-                    await db.update_balance(ctx.author.id, bank_change=-total_with_fee)
+                    result = await db.update_balance(ctx.author.id, bank_change=-total_with_fee)
                     
                     # Update portfolio
                     portfolio = await self.get_user_portfolio(ctx.author.id)
                     portfolio["gold_ounces"] = portfolio.get("gold_ounces", 0) + ounces
+                    portfolio["total_investment"] = portfolio.get("total_investment", 0) + total_with_fee
                     await self.update_user_portfolio(ctx.author.id, portfolio)
                     
                     embed = await self.create_market_embed("✅ Gold Purchase Complete", discord.Color.green())
@@ -762,6 +778,7 @@ class MarketCog(commands.Cog):
                     embed.add_field(name="💳 Total", value=f"${total_with_fee:,.2f}", inline=True)
                     embed.add_field(name="💎 Price per Ounce", value=f"${self.market.gold_price:,.2f}", inline=True)
                     embed.add_field(name="🥇 New Holdings", value=f"{portfolio['gold_ounces']:,.2f} ounces", inline=True)
+                    embed.add_field(name="🏦 Remaining Bank", value=f"${result['bank']:,.2f}", inline=True)
                     
                 except ValueError:
                     embed = await self.create_market_embed("❌ Invalid Amount", discord.Color.red())
@@ -863,10 +880,16 @@ class MarketCog(commands.Cog):
                     total_after_fee = total_value - fee
                     
                     # Process sale
-                    await db.update_balance(ctx.author.id, bank_change=total_after_fee)
+                    result = await db.update_balance(ctx.author.id, bank_change=total_after_fee)
                     
                     # Update portfolio
                     portfolio["gold_ounces"] = current_ounces - ounces
+                    # Update investment tracking (simplified - in reality you'd track cost basis)
+                    original_investment = portfolio.get("total_investment", 0)
+                    if original_investment > 0:
+                        sold_ratio = ounces / (current_ounces + ounces)  # ratio of sold position
+                        portfolio["total_investment"] = original_investment * (1 - sold_ratio)
+                    
                     await self.update_user_portfolio(ctx.author.id, portfolio)
                     
                     embed = await self.create_market_embed("✅ Gold Sale Complete", discord.Color.green())
@@ -876,6 +899,7 @@ class MarketCog(commands.Cog):
                     embed.add_field(name="💳 Net Proceeds", value=f"${total_after_fee:,.2f}", inline=True)
                     embed.add_field(name="💎 Price per Ounce", value=f"${self.market.gold_price:,.2f}", inline=True)
                     embed.add_field(name="🥇 Remaining Holdings", value=f"{portfolio['gold_ounces']:,.2f} ounces", inline=True)
+                    embed.add_field(name="🏦 New Bank Balance", value=f"${result['bank']:,.2f}", inline=True)
                     
                 except ValueError:
                     embed = await self.create_market_embed("❌ Invalid Amount", discord.Color.red())
