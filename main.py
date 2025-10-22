@@ -177,7 +177,7 @@ class Bot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="~~help | Economy & Games"
+                name="~~help | Economy & Bar"
             ),
             status=discord.Status.online
         )
@@ -362,7 +362,7 @@ async def before_auto_cleaner():
 @bot.command(name="help")
 async def help_command(ctx: commands.Context, category: str = None):
     """Main help command with categories. Use ~~help admin or ~~help economy."""
-    if category and category.lower() in ["admin", "economy", "markets", "gambling"]:
+    if category and category.lower() in ["admin", "economy", "markets", "gambling", "bartender"]:
         await _show_category_help(ctx, category.lower())
     else:
         await _show_general_help(ctx)
@@ -396,10 +396,12 @@ async def _show_general_help(ctx: commands.Context):
             "**~~help economy** - Money, work, and daily rewards\n"
             "**~~help markets** - Stock market and gold trading\n"
             "**~~help gambling** - Games and betting\n"
+            "**~~help bartender** - Bar and drinks system\n"  # ← NEW CATEGORY
             "**~~admin** - Direct admin commands\n"
             "**~~economy** - Direct economy commands\n"
             "**~~markets** - Direct market commands\n"
-            "**~~gambling** - Direct gambling commands"
+            "**~~gambling** - Direct gambling commands\n"
+            "**~~bartender** - Direct bartender commands"  # ← NEW COMMAND
         ),
         inline=False
     )
@@ -410,6 +412,7 @@ async def _show_general_help(ctx: commands.Context):
             "• Use `~~economy` to see money commands\n"
             "• Use `~~markets` for stock trading\n"
             "• Use `~~gambling` for fun games\n"
+            "• Use `~~bartender` for drinks and bar\n"  # ← NEW LINE
             "• Use `~~admin` for moderation tools\n"
             "• Most commands have cooldowns for balance"
         ),
@@ -429,6 +432,8 @@ async def _show_category_help(ctx: commands.Context, category: str):
         await _show_markets_help(ctx)
     elif category == "gambling":
         await _show_gambling_help(ctx)
+    elif category == "bartender":  # ← NEW CATEGORY
+        await _show_bartender_help(ctx)
 
 async def _show_admin_help(ctx: commands.Context):
     """Show admin/moderation commands."""
@@ -703,6 +708,58 @@ async def _show_gambling_help(ctx: commands.Context):
     embed.set_footer(text="Games have improved odds for better player experience!")
     await ctx.send(embed=embed)
 
+async def _show_bartender_help(ctx: commands.Context):  # ← NEW HELP CATEGORY
+    """Show bartender and bar commands."""
+    embed = discord.Embed(
+        title="🍸 Bartender & Bar Commands",
+        description="Order drinks, manage your bar tab, and enjoy social drinking!",
+        color=discord.Color.orange()
+    )
+    
+    # Drinking Commands
+    drinking_cmds = [
+        "`drink` - View drink menu or order a drink",
+        "`drinkmenu` - Show detailed drink menu", 
+        "`drinkinfo <drink>` - Get info about a specific drink",
+        "`mydrinks [user]` - View your drink history and bar status",
+        "`soberup` - Order water to sober up"
+    ]
+    
+    embed.add_field(
+        name="🍹 Drinking Commands",
+        value="\n".join(drinking_cmds),
+        inline=False
+    )
+    
+    # Social Commands
+    social_cmds = [
+        "`drink buy <user> <drink>` - Buy a drink for someone",
+        "`toast` - Start a group toast (coming soon)",
+        "`cheers` - Cheer with everyone (coming soon)"
+    ]
+    
+    embed.add_field(
+        name="🎉 Social Features",
+        value="\n".join(social_cmds),
+        inline=False
+    )
+    
+    # Bar Information
+    embed.add_field(
+        name="💡 Bar Information",
+        value=(
+            "• **All drinks use WALLET money**\n"
+            "• **Drink prices:** 20-500£\n"
+            "• **Tipsy meter:** Tracks your intoxication\n"
+            "• **Water helps sober up**\n"
+            "• **Try different drinks** to build your collection!"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="🍻 Drink responsibly and have fun!")
+    await ctx.send(embed=embed)
+
 # ---------------- New Category Help Commands ----------------
 @bot.command(name="admin")
 async def admin_help(ctx: commands.Context):
@@ -724,10 +781,15 @@ async def gambling_help(ctx: commands.Context):
     """Direct gambling help command."""
     await _show_gambling_help(ctx)
 
+@bot.command(name="bartender")  # ← NEW DIRECT COMMAND
+async def bartender_help(ctx: commands.Context):
+    """Direct bartender help command."""
+    await _show_bartender_help(ctx)
+
 # ---------------- Cog Loader ----------------
 async def load_cogs():
     """Enhanced cog loader with dependency checking."""
-    cogs = ["admin", "economy", "market", "gambling"]
+    cogs = ["admin", "economy", "market", "gambling", "bartender"]  # ← ADDED "bartender"
     loaded_count = 0
     
     for cog in cogs:
@@ -755,7 +817,7 @@ async def load_cogs():
 
 async def reload_cogs():
     """Reload all cogs."""
-    cogs = ["admin", "economy", "market", "gambling"]
+    cogs = ["admin", "economy", "market", "gambling", "bartender"]  # ← ADDED "bartender"
     for cog in cogs:
         try:
             await bot.reload_extension(cog)
@@ -786,7 +848,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="~~help | Economy & Games"
+            name="~~help | Economy & Bar"  # ← UPDATED STATUS
         ),
         status=discord.Status.online
     )
