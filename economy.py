@@ -246,6 +246,14 @@ class MongoDB:
             "daily_streak": 0,
             "last_daily": None,
             "total_earned": 0,
+            "portfolio": {
+                "gold_ounces": 0.0,
+                "stocks": {},
+                "total_investment": 0,
+                "total_value": 0,
+                "daily_pnl": 0,
+                "total_pnl": 0
+            },
             "bar_data": {
                 "patron_level": 1,
                 "favorite_drink": None,
@@ -717,6 +725,26 @@ class Economy(commands.Cog):
             "multiplier": multiplier,
             "expires_at": datetime.now() + timedelta(days=duration) if duration else None
         }
+
+    # Portfolio management methods
+    async def get_user_portfolio(self, user_id: int) -> Dict:
+        """Get user's investment portfolio including gold."""
+        user = await self.get_user(user_id)
+        portfolio = user.get("portfolio", {
+            "gold_ounces": 0.0,
+            "stocks": {},
+            "total_investment": 0,
+            "total_value": 0,
+            "daily_pnl": 0,
+            "total_pnl": 0
+        })
+        return portfolio
+
+    async def update_user_portfolio(self, user_id: int, portfolio: Dict):
+        """Update user's investment portfolio."""
+        user = await self.get_user(user_id)
+        user["portfolio"] = portfolio
+        await self.update_user(user_id, user)
 
     # ========== COMMANDS ==========
     
