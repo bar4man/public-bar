@@ -26,7 +26,7 @@ class MongoDB:
                 return False
             
             self.client = motor.motor_asyncio.AsyncIOMotorClient(connection_string)
-            self.db = self.client.economy_bot
+            self.db = self.client.get_database('discord_bot')
             
             # Test connection
             await self.client.admin.command('ping')
@@ -175,36 +175,29 @@ class MongoDB:
         """Migrate existing users to include wallet_limit and bank_limit fields."""
         try:
             # Find users missing the new fields
-            users_to_update = await self.db.users.find({
+            async for user in self.db.users.find({
                 "$or": [
                     {"wallet_limit": {"$exists": False}},
                     {"bank_limit": {"$exists": False}}
                 ]
-            }).to_list(length=None)
+            }):
+                update_data = {}
+                
+                # Add missing wallet_limit with default value
+                if "wallet_limit" not in user:
+                    update_data["wallet_limit"] = 50000  # Default wallet limit: 50k
+                
+                # Add missing bank_limit with default value  
+                if "bank_limit" not in user:
+                    update_data["bank_limit"] = 500000  # Default bank limit: 500k
+                
+                if update_data:
+                    await self.db.users.update_one(
+                        {"_id": user["_id"]},
+                        {"$set": update_data}
+                    )
             
-            if users_to_update:
-                logging.info(f"🔄 Migrating {len(users_to_update)} users to new schema")
-                
-                for user in users_to_update:
-                    update_data = {}
-                    
-                    # Add missing wallet_limit with default value
-                    if "wallet_limit" not in user:
-                        update_data["wallet_limit"] = 50000  # Default wallet limit: 50k
-                    
-                    # Add missing bank_limit with default value  
-                    if "bank_limit" not in user:
-                        update_data["bank_limit"] = 500000  # Default bank limit: 500k
-                    
-                    if update_data:
-                        await self.db.users.update_one(
-                            {"_id": user["_id"]},
-                            {"$set": update_data}
-                        )
-                
-                logging.info(f"✅ Successfully migrated {len(users_to_update)} users")
-            else:
-                logging.info("✅ All users already have the new schema")
+            logging.info("✅ User schema migration completed")
                 
         except Exception as e:
             logging.error(f"❌ Error during user schema migration: {e}")
@@ -265,7 +258,8 @@ class MongoDB:
         update_data["last_active"] = datetime.now()
         await self.db.users.update_one(
             {"user_id": user_id},
-            {"$set": update_data}
+            {"$set": update_data},
+            upsert=True
         )
     
     async def update_balance(self, user_id: int, wallet_change: int = 0, bank_change: int = 0) -> Dict:
@@ -601,15 +595,21 @@ class Economy(commands.Cog):
     
     async def cog_load(self):
         """Load data when cog is loaded."""
-        # Connect to MongoDB
-        success = await db.connect()
-        if success:
-            await db.initialize_collections()
-            self.ready = True
-            logging.info("✅ Economy system loaded with MongoDB")
-        else:
-            logging.error("❌ Economy system using fallback mode (no persistence)")
-            self.ready = False
+        # Connect to MongoDB with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            success = await db.connect()
+            if success:
+                await db.initialize_collections()
+                self.ready = True
+                logging.info("✅ Economy system loaded with MongoDB")
+                return
+            else:
+                logging.warning(f"❌ MongoDB connection attempt {attempt + 1} failed, retrying...")
+                await asyncio.sleep(2)
+        
+        logging.error("❌ Economy system using fallback mode (no persistence)")
+        self.ready = False
     
     # User management methods
     async def get_user(self, user_id: int) -> Dict:
