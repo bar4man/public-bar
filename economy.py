@@ -172,24 +172,36 @@ class MongoDB:
             return False
     
     async def migrate_user_schema(self):
-        """Migrate existing users to include wallet_limit and bank_limit fields."""
+        """Migrate existing users to include wallet_limit, bank_limit, and portfolio fields."""
         try:
             # Find users missing the new fields
             async for user in self.db.users.find({
                 "$or": [
                     {"wallet_limit": {"$exists": False}},
-                    {"bank_limit": {"$exists": False}}
+                    {"bank_limit": {"$exists": False}},
+                    {"portfolio": {"$exists": False}}
                 ]
             }):
                 update_data = {}
                 
                 # Add missing wallet_limit with default value
                 if "wallet_limit" not in user:
-                    update_data["wallet_limit"] = 50000  # Default wallet limit: 50k
+                    update_data["wallet_limit"] = 50000
                 
                 # Add missing bank_limit with default value  
                 if "bank_limit" not in user:
-                    update_data["bank_limit"] = 500000  # Default bank limit: 500k
+                    update_data["bank_limit"] = 500000
+                
+                # Add missing portfolio with default structure
+                if "portfolio" not in user:
+                    update_data["portfolio"] = {
+                        "gold_ounces": 0.0,
+                        "stocks": {},
+                        "total_investment": 0,
+                        "total_value": 0,
+                        "daily_pnl": 0,
+                        "total_pnl": 0
+                    }
                 
                 if update_data:
                     await self.db.users.update_one(
