@@ -524,7 +524,397 @@ class MarketCog(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    # ... (rest of your existing market commands remain the same - stocks, gold, buy, sell, portfolio, news)
+    @commands.command(name="stocks")
+    async def stocks_info(self, ctx: commands.Context, symbol: str = None):
+        """View stock information."""
+        if symbol and symbol.upper() in self.market.stocks:
+            # Show specific stock
+            stock = self.market.stocks[symbol.upper()]
+            change = self.market.get_price_change(symbol.upper())
+            change_emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+            
+            embed = await self.create_market_embed(f"📊 {stock['name']} ({symbol.upper()})")
+            embed.description = stock["description"]
+            
+            embed.add_field(name="💰 Current Price", value=f"${stock['price']:,.2f}", inline=True)
+            embed.add_field(name="📈 Today's Change", value=f"{change:+.2f}% {change_emoji}", inline=True)
+            embed.add_field(name="🏢 Sector", value=stock["sector"], inline=True)
+            
+            embed.add_field(name="📊 Day Range", value=f"${stock['day_low']:,.2f} - ${stock['day_high']:,.2f}", inline=True)
+            embed.add_field(name="📈 Volume", value=f"{stock['volume']:,}", inline=True)
+            embed.add_field(name="💵 P/E Ratio", value=stock["pe_ratio"], inline=True)
+            
+            embed.add_field(name="💰 Dividend Yield", value=f"{stock['dividend_yield']:.1%}", inline=True)
+            embed.add_field(name="🏢 Market Cap", value=f"${stock['market_cap']:,}", inline=True)
+            
+        else:
+            # Show all stocks
+            embed = await self.create_market_embed("📈 Available Stocks")
+            
+            stocks_list = ""
+            for symbol, stock in self.market.stocks.items():
+                change = self.market.get_price_change(symbol)
+                change_emoji = "📈" if change > 0 else "📉" if change < 0 else "➡️"
+                stocks_list += f"**{symbol}** - {stock['name']}\n${stock['price']:,.2f} ({change:+.1f}%) {change_emoji}\n\n"
+            
+            embed.description = stocks_list
+            embed.add_field(
+                name="💡 How to View Details",
+                value=f"Use `~~stocks <symbol>` to view detailed information about a specific stock.\nExample: `~~stocks TECH`",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="gold")
+    async def gold_info(self, ctx: commands.Context):
+        """View gold market information."""
+        status = self.market.get_market_status()
+        
+        embed = await self.create_market_embed("🥇 Gold Market")
+        
+        embed.add_field(name="💰 Current Price", value=f"${self.market.gold_price:,.2f} per ounce", inline=False)
+        
+        # Gold as investment
+        embed.add_field(
+            name="💎 About Gold",
+            value=(
+                "Gold is a safe-haven asset that typically performs well during:\n"
+                "• Economic uncertainty\n• High inflation\n• Market volatility\n"
+                "It's a valuable addition to any diversified portfolio."
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="💡 Trading Info",
+            value=(
+                "**Market Hours:** 9 AM - 5 PM UTC\n"
+                "**Trading Fee:** 1% per transaction\n"
+                "**Minimum:** 0.1 ounces\n"
+                "**Storage:** Secure vault storage included"
+            ),
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="portfolio", aliases=["port"])
+    async def portfolio(self, ctx: commands.Context, member: discord.Member = None):
+        """View your investment portfolio."""
+        member = member or ctx.author
+        portfolio = await self.get_user_portfolio(member.id)
+        
+        embed = await self.create_market_embed(f"💼 {member.display_name}'s Portfolio")
+        embed.set_thumbnail(url=member.display_avatar.url)
+        
+        # Calculate current values
+        total_value = 0
+        stocks_value = 0
+        
+        # Gold holdings
+        gold_value = portfolio.get("gold_ounces", 0) * self.market.gold_price
+        total_value += gold_value
+        
+        # Stock holdings
+        stocks_text = ""
+        for symbol, shares in portfolio.get("stocks", {}).items():
+            if symbol in self.market.stocks:
+                stock_value = shares * self.market.stocks[symbol]["price"]
+                stocks_value += stock_value
+                stocks_text += f"**{symbol}**: {shares:,} shares (${stock_value:,.2f})\n"
+        
+        total_value += stocks_value
+        
+        # Portfolio summary
+        embed.add_field(
+            name="📊 Portfolio Summary",
+            value=(
+                f"**Total Value:** ${total_value:,.2f}\n"
+                f"**Gold:** ${gold_value:,.2f}\n"
+                f"**Stocks:** ${stocks_value:,.2f}"
+            ),
+            inline=False
+        )
+        
+        if stocks_text:
+            embed.add_field(name="📈 Stock Holdings", value=stocks_text, inline=False)
+        
+        if portfolio.get("gold_ounces", 0) > 0:
+            embed.add_field(
+                name="🥇 Gold Holdings", 
+                value=f"{portfolio['gold_ounces']:,.2f} ounces (${gold_value:,.2f})",
+                inline=False
+            )
+        
+        if total_value == 0:
+            embed.add_field(
+                name="💡 Getting Started",
+                value=(
+                    "Your portfolio is empty! Start investing with:\n"
+                    "• `~~buy gold <ounces>` - Buy gold\n"
+                    "• `~~buy stock <symbol> <shares>` - Buy stocks\n"
+                    "• `~~market` - View current prices"
+                ),
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name="buy")
+    async def buy(self, ctx: commands.Context, asset_type: str, *, args: str):
+        """Buy stocks or gold."""
+        if asset_type.lower() not in ["stock", "gold"]:
+            embed = await self.create_market_embed("❌ Invalid Asset Type", discord.Color.red())
+            embed.description = "Please specify either `stock` or `gold`.\n\n**Examples:**\n`~~buy stock TECH 10` - Buy 10 shares of TECH\n`~~buy gold 5` - Buy 5 ounces of gold"
+            return await ctx.send(embed=embed)
+        
+        if not self.market.market_open:
+            embed = await self.create_market_embed("❌ Market Closed", discord.Color.red())
+            embed.description = "Trading is only available during market hours (9 AM - 5 PM UTC)."
+            return await ctx.send(embed=embed)
+        
+        try:
+            if asset_type.lower() == "stock":
+                parts = args.split()
+                if len(parts) < 2:
+                    embed = await self.create_market_embed("❌ Invalid Syntax", discord.Color.red())
+                    embed.description = "Usage: `~~buy stock <symbol> <shares>`\nExample: `~~buy stock TECH 10`"
+                    return await ctx.send(embed=embed)
+                
+                symbol = parts[0].upper()
+                shares = int(parts[1])
+                
+                if symbol not in self.market.stocks:
+                    embed = await self.create_market_embed("❌ Invalid Stock Symbol", discord.Color.red())
+                    embed.description = f"Available stocks: {', '.join(self.market.stocks.keys())}"
+                    return await ctx.send(embed=embed)
+                
+                if shares <= 0:
+                    embed = await self.create_market_embed("❌ Invalid Share Amount", discord.Color.red())
+                    embed.description = "Number of shares must be greater than 0."
+                    return await ctx.send(embed=embed)
+                
+                stock = self.market.stocks[symbol]
+                total_cost = stock["price"] * shares
+                fee = total_cost * 0.005  # 0.5% fee
+                total_with_fee = total_cost + fee
+                
+                # Check if user has enough money in bank
+                user_data = await db.get_user(ctx.author.id)
+                if user_data["bank"] < total_with_fee:
+                    embed = await self.create_market_embed("❌ Insufficient Funds", discord.Color.red())
+                    embed.description = f"You need ${total_with_fee:,.2f} in your bank (including 0.5% fee), but only have ${user_data['bank']:,.2f}."
+                    return await ctx.send(embed=embed)
+                
+                # Process purchase
+                await db.update_balance(ctx.author.id, bank_change=-total_with_fee)
+                
+                # Update portfolio
+                portfolio = await self.get_user_portfolio(ctx.author.id)
+                portfolio["stocks"][symbol] = portfolio["stocks"].get(symbol, 0) + shares
+                await self.update_user_portfolio(ctx.author.id, portfolio)
+                
+                embed = await self.create_market_embed("✅ Stock Purchase Complete", discord.Color.green())
+                embed.description = f"Bought {shares:,} shares of {symbol} for ${total_cost:,.2f}"
+                embed.add_field(name="💰 Cost", value=f"${total_cost:,.2f}", inline=True)
+                embed.add_field(name="💸 Fee (0.5%)", value=f"${fee:,.2f}", inline=True)
+                embed.add_field(name="💳 Total", value=f"${total_with_fee:,.2f}", inline=True)
+                embed.add_field(name="📈 Price per Share", value=f"${stock['price']:,.2f}", inline=True)
+                embed.add_field(name="💼 New Holdings", value=f"{portfolio['stocks'][symbol]:,} shares", inline=True)
+                
+            else:  # gold
+                try:
+                    ounces = float(args)
+                    if ounces <= 0:
+                        embed = await self.create_market_embed("❌ Invalid Amount", discord.Color.red())
+                        embed.description = "Ounces must be greater than 0."
+                        return await ctx.send(embed=embed)
+                    
+                    if ounces < 0.1:
+                        embed = await self.create_market_embed("❌ Minimum Not Met", discord.Color.red())
+                        embed.description = "Minimum gold purchase is 0.1 ounces."
+                        return await ctx.send(embed=embed)
+                    
+                    total_cost = self.market.gold_price * ounces
+                    fee = total_cost * 0.01  # 1% fee
+                    total_with_fee = total_cost + fee
+                    
+                    # Check if user has enough money in bank
+                    user_data = await db.get_user(ctx.author.id)
+                    if user_data["bank"] < total_with_fee:
+                        embed = await self.create_market_embed("❌ Insufficient Funds", discord.Color.red())
+                        embed.description = f"You need ${total_with_fee:,.2f} in your bank (including 1% fee), but only have ${user_data['bank']:,.2f}."
+                        return await ctx.send(embed=embed)
+                    
+                    # Process purchase
+                    await db.update_balance(ctx.author.id, bank_change=-total_with_fee)
+                    
+                    # Update portfolio
+                    portfolio = await self.get_user_portfolio(ctx.author.id)
+                    portfolio["gold_ounces"] = portfolio.get("gold_ounces", 0) + ounces
+                    await self.update_user_portfolio(ctx.author.id, portfolio)
+                    
+                    embed = await self.create_market_embed("✅ Gold Purchase Complete", discord.Color.green())
+                    embed.description = f"Bought {ounces:,.2f} ounces of gold for ${total_cost:,.2f}"
+                    embed.add_field(name="💰 Cost", value=f"${total_cost:,.2f}", inline=True)
+                    embed.add_field(name="💸 Fee (1%)", value=f"${fee:,.2f}", inline=True)
+                    embed.add_field(name="💳 Total", value=f"${total_with_fee:,.2f}", inline=True)
+                    embed.add_field(name="💎 Price per Ounce", value=f"${self.market.gold_price:,.2f}", inline=True)
+                    embed.add_field(name="🥇 New Holdings", value=f"{portfolio['gold_ounces']:,.2f} ounces", inline=True)
+                    
+                except ValueError:
+                    embed = await self.create_market_embed("❌ Invalid Amount", discord.Color.red())
+                    embed.description = "Please provide a valid number of ounces.\nExample: `~~buy gold 2.5`"
+                    return await ctx.send(embed=embed)
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Error in buy command: {e}")
+            embed = await self.create_market_embed("❌ Transaction Failed", discord.Color.red())
+            embed.description = "An error occurred during the transaction. Please try again."
+            await ctx.send(embed=embed)
+
+    @commands.command(name="sell")
+    async def sell(self, ctx: commands.Context, asset_type: str, *, args: str):
+        """Sell stocks or gold."""
+        if asset_type.lower() not in ["stock", "gold"]:
+            embed = await self.create_market_embed("❌ Invalid Asset Type", discord.Color.red())
+            embed.description = "Please specify either `stock` or `gold`.\n\n**Examples:**\n`~~sell stock TECH 10` - Sell 10 shares of TECH\n`~~sell gold 5` - Sell 5 ounces of gold"
+            return await ctx.send(embed=embed)
+        
+        if not self.market.market_open:
+            embed = await self.create_market_embed("❌ Market Closed", discord.Color.red())
+            embed.description = "Trading is only available during market hours (9 AM - 5 PM UTC)."
+            return await ctx.send(embed=embed)
+        
+        try:
+            if asset_type.lower() == "stock":
+                parts = args.split()
+                if len(parts) < 2:
+                    embed = await self.create_market_embed("❌ Invalid Syntax", discord.Color.red())
+                    embed.description = "Usage: `~~sell stock <symbol> <shares>`\nExample: `~~sell stock TECH 10`"
+                    return await ctx.send(embed=embed)
+                
+                symbol = parts[0].upper()
+                shares = int(parts[1])
+                
+                if symbol not in self.market.stocks:
+                    embed = await self.create_market_embed("❌ Invalid Stock Symbol", discord.Color.red())
+                    embed.description = f"Available stocks: {', '.join(self.market.stocks.keys())}"
+                    return await ctx.send(embed=embed)
+                
+                if shares <= 0:
+                    embed = await self.create_market_embed("❌ Invalid Share Amount", discord.Color.red())
+                    embed.description = "Number of shares must be greater than 0."
+                    return await ctx.send(embed=embed)
+                
+                # Check if user has enough shares
+                portfolio = await self.get_user_portfolio(ctx.author.id)
+                current_shares = portfolio.get("stocks", {}).get(symbol, 0)
+                
+                if current_shares < shares:
+                    embed = await self.create_market_embed("❌ Insufficient Shares", discord.Color.red())
+                    embed.description = f"You only have {current_shares:,} shares of {symbol}, but tried to sell {shares:,}."
+                    return await ctx.send(embed=embed)
+                
+                stock = self.market.stocks[symbol]
+                total_value = stock["price"] * shares
+                fee = total_value * 0.005  # 0.5% fee
+                total_after_fee = total_value - fee
+                
+                # Process sale
+                await db.update_balance(ctx.author.id, bank_change=total_after_fee)
+                
+                # Update portfolio
+                portfolio["stocks"][symbol] = current_shares - shares
+                if portfolio["stocks"][symbol] == 0:
+                    del portfolio["stocks"][symbol]
+                await self.update_user_portfolio(ctx.author.id, portfolio)
+                
+                embed = await self.create_market_embed("✅ Stock Sale Complete", discord.Color.green())
+                embed.description = f"Sold {shares:,} shares of {symbol} for ${total_value:,.2f}"
+                embed.add_field(name="💰 Sale Value", value=f"${total_value:,.2f}", inline=True)
+                embed.add_field(name="💸 Fee (0.5%)", value=f"${fee:,.2f}", inline=True)
+                embed.add_field(name="💳 Net Proceeds", value=f"${total_after_fee:,.2f}", inline=True)
+                embed.add_field(name="📈 Price per Share", value=f"${stock['price']:,.2f}", inline=True)
+                embed.add_field(name="💼 Remaining Holdings", value=f"{portfolio['stocks'].get(symbol, 0):,} shares", inline=True)
+                
+            else:  # gold
+                try:
+                    ounces = float(args)
+                    if ounces <= 0:
+                        embed = await self.create_market_embed("❌ Invalid Amount", discord.Color.red())
+                        embed.description = "Ounces must be greater than 0."
+                        return await ctx.send(embed=embed)
+                    
+                    # Check if user has enough gold
+                    portfolio = await self.get_user_portfolio(ctx.author.id)
+                    current_ounces = portfolio.get("gold_ounces", 0)
+                    
+                    if current_ounces < ounces:
+                        embed = await self.create_market_embed("❌ Insufficient Gold", discord.Color.red())
+                        embed.description = f"You only have {current_ounces:,.2f} ounces of gold, but tried to sell {ounces:,.2f}."
+                        return await ctx.send(embed=embed)
+                    
+                    total_value = self.market.gold_price * ounces
+                    fee = total_value * 0.01  # 1% fee
+                    total_after_fee = total_value - fee
+                    
+                    # Process sale
+                    await db.update_balance(ctx.author.id, bank_change=total_after_fee)
+                    
+                    # Update portfolio
+                    portfolio["gold_ounces"] = current_ounces - ounces
+                    await self.update_user_portfolio(ctx.author.id, portfolio)
+                    
+                    embed = await self.create_market_embed("✅ Gold Sale Complete", discord.Color.green())
+                    embed.description = f"Sold {ounces:,.2f} ounces of gold for ${total_value:,.2f}"
+                    embed.add_field(name="💰 Sale Value", value=f"${total_value:,.2f}", inline=True)
+                    embed.add_field(name="💸 Fee (1%)", value=f"${fee:,.2f}", inline=True)
+                    embed.add_field(name="💳 Net Proceeds", value=f"${total_after_fee:,.2f}", inline=True)
+                    embed.add_field(name="💎 Price per Ounce", value=f"${self.market.gold_price:,.2f}", inline=True)
+                    embed.add_field(name="🥇 Remaining Holdings", value=f"{portfolio['gold_ounces']:,.2f} ounces", inline=True)
+                    
+                except ValueError:
+                    embed = await self.create_market_embed("❌ Invalid Amount", discord.Color.red())
+                    embed.description = "Please provide a valid number of ounces.\nExample: `~~sell gold 2.5`"
+                    return await ctx.send(embed=embed)
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logging.error(f"Error in sell command: {e}")
+            embed = await self.create_market_embed("❌ Transaction Failed", discord.Color.red())
+            embed.description = "An error occurred during the transaction. Please try again."
+            await ctx.send(embed=embed)
+
+    @commands.command(name="news")
+    async def market_news(self, ctx: commands.Context):
+        """View current market news and events."""
+        status = self.market.get_market_status()
+        
+        embed = await self.create_market_embed("📰 Market News & Events")
+        
+        if not status["news"]:
+            embed.description = "No major market news at this time."
+        else:
+            for i, event in enumerate(status["news"][:5], 1):
+                impact_emoji = "📈" if event["impact"] > 0 else "📉" if event["impact"] < 0 else "📰"
+                embed.add_field(
+                    name=f"{impact_emoji} News #{i}",
+                    value=event["text"],
+                    inline=False
+                )
+        
+        embed.add_field(
+            name="💡 Market Impact",
+            value="Positive news 📈 typically boosts stock prices, while negative news 📉 can cause declines.",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
 
     @commands.command(name="topmovers")
     async def top_movers(self, ctx: commands.Context):
