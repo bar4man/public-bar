@@ -246,6 +246,18 @@ class MongoDB:
             "daily_streak": 0,
             "last_daily": None,
             "total_earned": 0,
+            "bar_data": {
+                "patron_level": 1,
+                "favorite_drink": None,
+                "drinks_tried": [],
+                "total_drinks_ordered": 0,
+                "bar_tab": 0,
+                "tips_given": 0,
+                "tips_received": 0,
+                "sobering_cooldown": None,
+                "unlocked_drinks": {}
+            },
+            "bartender_achievements": [],
             "created_at": datetime.now(),
             "last_active": datetime.now()
         }
